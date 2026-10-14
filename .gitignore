@@ -1,0 +1,18 @@
+env/
+.env
+venv/
+.venv/
+logs/
+__pycache__/
+*.pyc
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+# Sitio generado por `mkdocs build`. Las FUENTES (docs/, mkdocs.yml) sí van
+# al repo; el HTML compilado no.
+site/
+# Los cuadernos guardan su salida DENTRO del .ipynb -- incluida cualquier
+# clave o saldo que se imprima. Los checkpoints de Jupyter son copias
+# completas de ese contenido.
+.ipynb_checkpoints/

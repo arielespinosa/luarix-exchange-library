@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "luarix-exchange-library"
+version = "0.1.0"
+description = "Conectores de exchange/broker (Binance, Bitunix, MT5, Paper) detras de una interfaz unica, y los modelos de dominio que intercambian. Libreria compartida por luarix-trading-framework/luarix-orchestator y luarix-arbitrage-web-server."
+readme = "README.md"
+requires-python = ">=3.11"
+# Solo pandas: es lo unico que necesitan `models` y `brokers.paper.PaperBroker`.
+# Cada broker REAL arrastra su propio SDK, y ninguno es obligatorio -- ver los
+# extras de abajo.
+dependencies = [
+    "pandas>=2.0",
+]
+
+[project.optional-dependencies]
+binance = ["python-binance>=1.0.36"]
+bitunix = ["bitunix>=0.1.2", "requests>=2.31"]
+yahoo = ["yfinance>=1.4.1"]
+# MetaTrader5 solo publica ruedas para Windows -- por eso vive en su propio
+# extra y nunca en `all`, que debe poder instalarse en Linux (CI, Docker).
+mt5 = ["MetaTrader5>=5.0.45"]
+all = [
+    "python-binance>=1.0.36",
+    "bitunix>=0.1.2",
+    "requests>=2.31",
+    "yfinance>=1.4.1",
+]
+test = ["pytest>=8.0"]
+# Documentacion (`mkdocs serve` / `mkdocs build`). Fuera de `all`: quien
+# instala el paquete para usarlo no necesita el generador del sitio.
+docs = ["mkdocs>=1.6", "mkdocs-material>=9.5"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["luarix_exchange*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
