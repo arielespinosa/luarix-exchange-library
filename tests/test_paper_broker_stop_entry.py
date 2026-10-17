@@ -42,6 +42,15 @@ def _fill_prices(reports):
     return [ExecutionReportFactory.parse(r).fill_price for r in reports if r["x"] == "TRADE"]
 
 
+def _stop_limit(broker, side: Side, stop: float, **metadata):
+    """El `stop-order` node real (`workflows/execution/nodes/execution.py::
+    StopOrderExecutor`) coloca `STOP_LOSS_LIMIT`, no `STOP_LOSS` -- las dos
+    son caminos de código DISTINTOS en `_fill()`, así que el hueco necesita
+    su propio test acá, no alcanza con el de `STOP_LOSS` de arriba."""
+    broker.place_order(OrderRequest(symbol=SYMBOL, side=side, quantity=1, order_type=OrderType.STOP_LOSS_LIMIT,
+                                    stop_price=stop, metadata=metadata))
+
+
 class StopEntryTests(unittest.TestCase):
     def test_buy_stop_fills_at_the_stop_when_the_high_reaches_it(self):
         broker, reports = _broker()
@@ -55,6 +64,21 @@ class StopEntryTests(unittest.TestCase):
     def test_sell_stop_fills_at_the_open_when_the_candle_gaps_through_it(self):
         broker, reports = _broker()
         _stop(broker, Side.SELL, 97)
+        broker.on_candle(SYMBOL, "1h", _candle(1, 95, 96, 90, 92))
+
+        self.assertEqual(_fill_prices(reports), [95.0])
+
+    def test_stop_loss_limit_fills_at_the_stop_when_the_high_reaches_it(self):
+        broker, reports = _broker()
+        _stop_limit(broker, Side.BUY, 105)
+        broker.on_candle(SYMBOL, "1h", _candle(1, 101, 104, 100, 103))  # no llega
+        broker.on_candle(SYMBOL, "1h", _candle(2, 103, 107, 102, 106))  # toca 105
+
+        self.assertEqual(_fill_prices(reports), [105.0])
+
+    def test_stop_loss_limit_fills_at_the_open_when_the_candle_gaps_through_it(self):
+        broker, reports = _broker()
+        _stop_limit(broker, Side.SELL, 97)
         broker.on_candle(SYMBOL, "1h", _candle(1, 95, 96, 90, 92))
 
         self.assertEqual(_fill_prices(reports), [95.0])

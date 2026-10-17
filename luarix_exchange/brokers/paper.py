@@ -304,6 +304,19 @@ class ParsedExecutionReport:
         """`True` si este evento es un fill real (entrada o salida)."""
         return self.execution_type == "TRADE"
 
+    @property
+    def is_rejected_entry(self) -> bool:
+        """`True` si esta orden se canceló/expiró/rechazó SIN llegar a
+        llenar -- pyramid-1, `reduce_only` sin posición, `candles_left`
+        agotado (`_expire_orders_out_of_candles`), o cancelada a mano.
+        Distinto de `is_oco_leg_cancellation` (esa es la pata PERDEDORA de un
+        OCO cuya hermana SÍ llenó -- acá no hay ningún fill de por medio, la
+        señal de entrada simplemente nunca se volvió posición real). El
+        caller (`BacktestStats.on_cancel`) usa esto para descartar el
+        registro `on_signal` que nunca llegó a `on_fill` -- si no, queda como
+        una operación "abierta" fantasma para siempre."""
+        return self.execution_type in ("CANCELED", "EXPIRED", "REJECTED") and self.oco_list_id is None
+
 
 class ExecutionReportFactory:
     """Genera el mismo diccionario que envía Binance mediante el UserDataStream."""
@@ -1193,7 +1206,22 @@ class PaperBroker(Broker):
             gapped = opened >= order.stop_price if order.side == OrderSide.BUY else opened <= order.stop_price
             fill_price = opened if gapped else order.stop_price
         elif order.type == OrderType.STOP_LOSS_LIMIT and order.stop_price:
-            fill_price = order.stop_price
+            # Mismo criterio de hueco que `STOP_LOSS` arriba -- un stop nunca
+            # "mejora" el precio, se llena al primer precio disponible una vez
+            # cruzado el nivel. Antes esta rama SIEMPRE llenaba a `stop_price`
+            # ignorando huecos, mientras `STOP_LOSS` (unas líneas arriba) sí
+            # los maneja -- el nodo `stop-order` real (`workflows/execution/
+            # nodes/execution.py::StopOrderExecutor`) coloca `STOP_LOSS_LIMIT`,
+            # así que esta era la rama que de verdad se ejercitaba, y la que
+            # se validó contra el oráculo de paridad (`tv_parity/tv_broker.py
+            # ::_stop_fill_price`): sin esto, una vela con hueco grande sobre
+            # el stop llenaba a un precio que TradingView nunca hubiera dado.
+            opened = Decimal(str(candle.open)) if getattr(candle, "open", None) is not None else None
+            if opened is None:
+                fill_price = order.stop_price
+            else:
+                gapped = opened >= order.stop_price if order.side == OrderSide.BUY else opened <= order.stop_price
+                fill_price = opened if gapped else order.stop_price
         elif order.type == OrderType.LIMIT and self.position_mode == "single":
             # Como TradingView: si la vela ABRE ya más allá del límite (una
             # compra por debajo, una venta por encima), a la apertura, que es
