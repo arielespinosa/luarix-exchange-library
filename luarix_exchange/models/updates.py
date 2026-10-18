@@ -21,7 +21,12 @@ class OrderUpdate:
 
     `filled_qty` es lo ejecutado ACUMULADO; `last_fill_qty`/`last_fill_price`
     describen solo el llenado que provocó este evento (`None` si el evento
-    no fue un llenado, p. ej. una cancelación).
+    no fue un llenado, p. ej. una cancelación). `average_price` es el precio
+    medio acumulado.
+
+    Por polling no se conoce el precio de cada llenado suelto (solo el medio):
+    ahí `last_fill_price` queda en `None` y `average_price` va relleno. Un
+    WebSocket de órdenes sí lo da.
     """
 
     exchange: str
@@ -29,12 +34,13 @@ class OrderUpdate:
     symbol: str
     order_id: str
     status: OrderStatus
-    side: Side
+    side: Side | None
     filled_qty: Decimal
     event_time_ms: int
     client_order_id: str | None = None
     last_fill_qty: Decimal | None = None
     last_fill_price: Decimal | None = None
+    average_price: Decimal | None = None
     fee: Decimal | None = None
     fee_asset: str | None = None
     raw: Any = field(default=None, repr=False, compare=False)

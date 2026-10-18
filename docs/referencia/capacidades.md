@@ -41,8 +41,9 @@ broker.require(Capability.NATIVE_OCO)    # NotImplementedError: Bitunix no sopor
 | `ORDER_BOOK_STREAM` | `OrderBookStream` | `async stream_order_books(...)` |
 | `ORDER_UPDATE_STREAM` | `OrderUpdateStream` | `async stream_order_updates(...)` |
 
-REST **síncrono**; streams **asíncronos** (decisión híbrida, 2026-10-16). Los
-streams solo están definidos: su implementación es la Fase 4.
+REST **síncrono**; streams **asíncronos** (decisión híbrida, 2026-10-16).
+Cualquier exchange con `MARKET_DATA`/`ACCOUNT` tiene streams por polling
+desde la Fase 4; ver [Streaming en vivo](../guia/streaming.md).
 
 ## Matriz actual
 
@@ -58,7 +59,8 @@ Fijada en `tests/test_capabilities.py::BrokerMatrixTests`.
 ¹ Las velas le entran por `on_candle`, no por red. ² Tiene `get_ticker` y
 `list_symbols`, pero no velas ni libro. ³ SL/TP sobre la posición.
 
-Ninguno tiene todavía `FEES`, `SERVER_CLOCK` ni streams (Fases 4-6).
+Ninguno tiene todavía `FEES`, `SERVER_CLOCK` ni streams NATIVOS (WebSocket, Fases 5-6);
+los streams por polling los tienen todos los que tienen `MARKET_DATA`/`ACCOUNT`.
 
 ## Modelos nuevos (en `Decimal`)
 

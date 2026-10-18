@@ -38,6 +38,17 @@ Comprobado en vivo el 2026-10-16 (Fase 3), sin credenciales:
 - El libro de **spot de Bitunix salía VACÍO**: se pedía `precision=2` y la API
   respondía `success` con listas vacías. Arreglado (ver `docs/plans/bugs.md`).
 
+Comprobado en vivo el 2026-10-18 (Fase 4, streaming por polling), sin
+credenciales, a través del puente síncrono (`StreamRunner`):
+
+- Libros de Binance spot y Bitunix futuros: ~15 cambios del top-5 en 19 s,
+  siempre ordenados.
+- Velas de 1m de Binance spot y Bitunix futuros: la vela de las 05:36 llegó a
+  las 05:37:04-05 (sondeo cada 5 s), en su minuto.
+- `websocket_session` contra el kline público de Binance.
+- **`PollingMarketDataFeed` iba una vela tarde** (emitía la penúltima vela
+  cerrada). Arreglado; ver `docs/plans/bugs.md`.
+
 Verificado en sesiones anteriores contra la cuenta real de Bitunix:
 
 - La **firma** de `BitunixFuturesClient` (GET y POST).

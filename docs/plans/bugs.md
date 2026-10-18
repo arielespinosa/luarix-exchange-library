@@ -950,3 +950,55 @@ mínimo: `min_notional=0`.
   Supertrend): 7/7 OK.
 - Ningún consumidor hereda de `Broker` (comprobado con grep): el abstracto
   nuevo `list_symbols` no les afecta.
+
+---
+
+## GRAVE — `PollingMarketDataFeed` entregaba cada vela UN PERIODO TARDE (2026-10-18) — ARREGLADO
+
+`brokers/market_data/live_feed.py::PollingMarketDataFeed._poll_one` emitía
+`candles[-2]` suponiendo que la última vela devuelta "seguía formándose". Eso
+era verdad antes del arreglo del 2026-08-11 ("limit=N devolvía N-1 velas..."),
+que hizo que los proveedores DESCARTEN la vela en curso. Desde entonces
+`[-2]` era la ANTERIOR a la última cerrada.
+
+Verificado contra la API real (Binance y Bitunix, BTCUSDT 1m): a las
+05:30:52 UTC las velas devueltas eran 05:27, 05:28, 05:29 (todas cerradas) y
+el feed emitía la de las 05:28.
+
+**Quién lo sufría**: toda estrategia en vivo sobre polling -- en web-server
+(`marketdata/services.get_live_feed_for`) y en orchestator
+(`TradingFrameworkLiveFeedAdapter`) es TODO broker que no sea Binance (que va
+por WebSocket), o sea Bitunix. Con velas de 1h, cada decisión llegaba una
+hora tarde. Ninguno de los dos lo compensaba (comprobado con grep).
+
+**Arreglo**: emite la última vela con `is_closed=True`. Test de regresión
+`tests/test_polling_feed_latest_closed.py` (falla con el código viejo).
+
+⚠ **Llega a producción solo cuando se suba el commit fijado de la librería**
+en framework / web-server / orchestator. Al hacerlo, las estrategias de
+Bitunix empezarán a recibir las velas un periodo ANTES que hoy (lo correcto):
+avisar al equipo.
+
+## [2026-10-18] Fase 4 — infraestructura de streaming
+
+Diseño: `docs/plans/fase4_streaming.md`. Guía: `docs/guia/streaming.md`.
+
+- `run_with_reconnect`: solo reintenta errores de RED (`OSError`, que cubre
+  `requests.RequestException`, + `aiohttp.ClientError` + timeouts). Cualquier
+  otro error termina el stream -- a propósito: un `ValueError` por símbolo
+  inválido reintentado para siempre es un fallo silencioso.
+- El polling guarda su estado (marcas de agua de velas, órdenes conocidas)
+  FUERA de la sesión: una reconexión no reemite historia ni pierde órdenes.
+- `PollingOrderUpdateStream` nunca infiere `FILLED` por desaparición: pregunta
+  `get_order()` y, si falla, reintenta en la siguiente vuelta (avisando con el
+  motivo real cada `LOG_EVERY` fallos).
+- `websocket_session` termina cuando el servidor cierra (y
+  `run_with_reconnect` la reabre); con `stop` corta aunque el servidor no
+  mande nada (test con servidor aiohttp real que se queda mudo).
+- En los tests con servidor aiohttp local: si el handler se queda esperando,
+  `runner.cleanup()` espera a que acabe -- el handler debe terminar con un
+  evento que el test active ANTES del cleanup, o el test se cuelga.
+
+Verificación: 227 tests de la librería; en vivo, a través de `StreamRunner`,
+libros y velas de 1m de Binance spot y Bitunix futuros, y `websocket_session`
+contra el kline público de Binance (ver `docs/estado.md`).

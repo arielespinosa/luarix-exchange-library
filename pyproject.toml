@@ -19,10 +19,14 @@ dependencies = [
 binance = ["python-binance>=1.0.36"]
 bitunix = ["bitunix>=0.1.2", "requests>=2.31"]
 yahoo = ["yfinance>=1.4.1"]
+# Streams por WebSocket (luarix_exchange.streaming.websocket). El polling y el
+# puente síncrono no lo necesitan.
+streams = ["aiohttp>=3.9"]
 # MetaTrader5 solo publica ruedas para Windows -- por eso vive en su propio
 # extra y nunca en `all`, que debe poder instalarse en Linux (CI, Docker).
 mt5 = ["MetaTrader5>=5.0.45"]
 all = [
+    "aiohttp>=3.9",
     "python-binance>=1.0.36",
     "bitunix>=0.1.2",
     "requests>=2.31",

@@ -78,10 +78,12 @@ class PollingMarketDataFeed(LiveMarketDataFeed):
     """
     Generic fallback feed for any broker with no native real-time push —
     just a plain `MarketDataProvider` (REST). Polls `get_last_candles` on a
-    background thread; the most-recently-returned candle from a live klines
-    endpoint is typically still forming, so the second-to-last one is
-    treated as "the latest guaranteed-closed candle" and `on_new_candle`
-    fires the first time its `open_time` changes. This is what any broker
+    background thread and fires `on_new_candle` the first time the LATEST
+    CLOSED candle's `open_time` changes. (The providers already drop the
+    still-forming candle; until 2026-10-18 this took the second-to-last one
+    and every candle arrived one period late -- see `_poll_one`.) The
+    asyncio equivalent is `luarix_exchange.streaming.PollingCandleStream`.
+    This is what any broker
     without a dedicated entry in `get_live_feed_for` gets automatically —
     the seam a new broker needs zero extra code to plug into.
     """
@@ -132,9 +134,16 @@ class PollingMarketDataFeed(LiveMarketDataFeed):
     def _poll_one(self, symbol: str, timeframe: str, callback: OnNewCandle) -> None:
         raw = self._provider.get_last_candles(symbol, interval=timeframe, limit=3)
         candles = _dataframe_to_candles(symbol, timeframe, raw) if isinstance(raw, pd.DataFrame) else list(raw)
-        if len(candles) < 2:
+        # La ÚLTIMA vela cerrada. Antes se tomaba `candles[-2]` dando por
+        # hecho que la última seguía formándose -- pero los proveedores ya
+        # descartan la vela en curso (bugs.md, "limit=N devolvía N-1 velas"),
+        # así que `[-2]` era la ANTERIOR a la última cerrada: cada vela
+        # llegaba con un periodo entero de retraso a toda estrategia en vivo
+        # sobre polling (Bitunix). Verificado contra la API el 2026-10-18.
+        closed = [c for c in candles if c.is_closed]
+        if not closed:
             return
-        latest_closed = candles[-2]
+        latest_closed = closed[-1]
         key = (symbol, timeframe)
         if self._last_open_time.get(key) == latest_closed.open_time:
             return

@@ -176,6 +176,13 @@ orchestator) y todo-sync (reescribir el motor de arbitraje).
 
 ## Fase 4 — Infraestructura de streaming
 
+**Implementada el 2026-10-18** en la rama `feat/fase4-streaming` (sin
+commitear). Diseño: `docs/plans/fase4_streaming.md`; guía:
+`docs/guia/streaming.md`. Incluye el arreglo de `PollingMarketDataFeed`, que
+entregaba cada vela un periodo tarde (ver `bugs.md`). `live_feed.py` (lo usan
+web-server y orchestator) NO se ha reescrito todavía sobre esta
+infraestructura: eso va con la Fase 5.
+
 Una sola implementación de reconexión para todos: se generaliza el
 `Exchange.stream_books` de arbitraje (*template method*: el bucle común
 reconecta con espera exponencial y cada exchange implementa solo una sesión).
