@@ -49,6 +49,21 @@ credenciales, a través del puente síncrono (`StreamRunner`):
 - **`PollingMarketDataFeed` iba una vela tarde** (emitía la penúltima vela
   cerrada). Arreglado; ver `docs/plans/bugs.md`.
 
+Comprobado en vivo el 2026-10-18 (Fase 5, WebSockets):
+
+- **Binance**, spot y futuros: velas cerradas (`kline`, `x=true`) y libro
+  parcial por WebSocket. Futuros reparte sus rutas: velas en `/market/`, libro
+  en `/public/`; la ruta clásica `/ws/` deja MUDO el kline.
+- **Binance spot, órdenes** (testnet, claves del `.env`): suscripción firmada
+  aceptada y eventos NEW, CANCELED y FILLED con cantidad, precio de llenado,
+  precio medio y comisión correctos.
+- **Bitunix futuros**: velas (WebSocket como disparador + REST) ~1,5 s tras el
+  cierre, y libro `depth_book5` por WebSocket. Login privado con claves falsas:
+  rechazado con su motivo real y el stream se detiene (`StreamAuthError`).
+- **Sin verificar**: Binance futuros privado (sin claves de futuros) y el canal
+  `order` de Bitunix con una cuenta real (sin claves). Usa
+  `scripts/probar_streams.py --privado`.
+
 Verificado en sesiones anteriores contra la cuenta real de Bitunix:
 
 - La **firma** de `BitunixFuturesClient` (GET y POST).
@@ -117,7 +132,7 @@ Verificado en sesiones anteriores contra la cuenta real de Bitunix:
 |---|---|
 | **Modo cobertura sin soporte** | En hedge exige `positionSide` en vez de `reduceOnly`, y el broker no lee el modo de la cuenta |
 | **`_futures_symbol_filters` sin caché** | Una llamada a `futures_exchange_info()` por orden |
-| **`start_user_socket` comentado** | Sin push de estado de órdenes |
+| **`start_user_socket` comentado** | Sustituido por `stream_order_updates` (Fase 5) |
 | **`test_order=True` no aplica a futuros** | |
 | **`update_order` en spot cancela y recoloca** | El `order_id` cambia y no es atómico |
 
@@ -142,11 +157,21 @@ Verificado en sesiones anteriores contra la cuenta real de Bitunix:
 
 ---
 
-## Ningún broker empuja estado de órdenes
+## Push de estado de órdenes
 
-!!! danger "Hay que PREGUNTAR"
-    - Bitunix **no tiene** stream de datos de usuario.
-    - El `start_user_socket` de Binance está **comentado**.
+!!! success "Desde la Fase 5 (2026-10-18) SÍ hay push de órdenes"
+    - **Binance spot**: WebSocket API (`userDataStream.subscribe.signature`),
+      verificado de extremo a extremo en testnet (NEW, CANCELED, llenados).
+    - **Binance futuros**: `listenKey` + `/private/ws/` (implementado, sin
+      verificar contra cuenta real).
+    - **Bitunix futuros**: canal privado `order` (implementado; login y su
+      rechazo verificados; falta probarlo con una cuenta real).
+    - **Bitunix spot**: sigue sin push; polling (`PollingOrderUpdateStream`).
+
+    Ver [Streaming en vivo](guia/streaming.md). El `start_user_socket` de
+    python-binance sigue comentado: ya no hace falta.
+
+!!! danger "Sin stream (Bitunix spot, o antes de la Fase 5): hay que PREGUNTAR"
 
     Consecuencia: una orden colocada y luego cancelada a mano en la app del
     exchange se queda como `NEW` para siempre en cualquier sistema que espere un

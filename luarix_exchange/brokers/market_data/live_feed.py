@@ -199,3 +199,54 @@ def _kline_handler(symbol: str, timeframe: str, on_new_candle: OnNewCandle) -> C
             on_new_candle(candle)
 
     return handle
+
+
+class StreamingMarketDataFeed(LiveMarketDataFeed):
+    """`LiveMarketDataFeed` sobre la infraestructura de streaming (Fases 4-5):
+    WebSocket donde el broker lo tiene (Binance spot/futuros, Bitunix
+    futuros) y polling donde no, con la MISMA interfaz que los feeds de
+    arriba. Pensado para sustituir a `get_live_feed_for` en web-server y
+    orchestator con un cambio de una línea:
+
+        StreamingMarketDataFeed(broker, market="futures")
+
+    Solo entrega velas CERRADAS, una vez cada una. Los callbacks corren en el
+    hilo del `StreamRunner`: tienen que ser rápidos (ver
+    `luarix_exchange.streaming.bridge`).
+    """
+
+    def __init__(self, broker, market: str = "spot", poll_seconds: float = 20, runner=None):
+        from luarix_exchange.streaming import StreamRunner
+
+        self._broker = broker
+        self._market = market
+        self._poll_seconds = poll_seconds
+        self._own_runner = runner is None
+        self._runner = runner or StreamRunner(name=f"luarix-feed-{getattr(broker, 'name', 'broker')}")
+        self._handles: dict[tuple[str, str], object] = {}
+        self._lock = threading.Lock()
+
+    def subscribe(self, symbol: str, timeframe: str, on_new_candle: OnNewCandle) -> None:
+        from luarix_exchange.streaming import CandleSubscription, candle_stream
+
+        self.unsubscribe(symbol, timeframe)
+        stream = candle_stream(self._broker, poll_s=self._poll_seconds, market=self._market)
+        sub = CandleSubscription(symbol, timeframe, self._market)
+        handle = self._runner.start(lambda stop: stream.stream_candles([sub], on_new_candle, stop),
+                                    label=f"feed {symbol} {timeframe} {self._market}")
+        with self._lock:
+            self._handles[(symbol, timeframe)] = handle
+
+    def unsubscribe(self, symbol: str, timeframe: str) -> None:
+        with self._lock:
+            handle = self._handles.pop((symbol, timeframe), None)
+        if handle is not None:
+            handle.stop()
+
+    def stop(self) -> None:
+        with self._lock:
+            handles, self._handles = list(self._handles.values()), {}
+        for handle in handles:
+            handle.stop()
+        if self._own_runner:
+            self._runner.close()

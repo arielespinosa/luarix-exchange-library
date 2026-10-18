@@ -1002,3 +1002,84 @@ Diseño: `docs/plans/fase4_streaming.md`. Guía: `docs/guia/streaming.md`.
 Verificación: 227 tests de la librería; en vivo, a través de `StreamRunner`,
 libros y velas de 1m de Binance spot y Bitunix futuros, y `websocket_session`
 contra el kline público de Binance (ver `docs/estado.md`).
+
+---
+
+## [2026-10-18] Fase 5 — WebSockets de Binance y Bitunix
+
+Código: `brokers/binance_streams.py`, `brokers/bitunix_streams.py`,
+`StreamingMarketDataFeed` en `live_feed.py`. Prueba real: `scripts/probar_streams.py`.
+
+### Binance futuros reparte sus streams por RUTA — y la equivocada se queda MUDA
+
+Comprobado contra `fstream.binance.com`: `kline` y `aggTrade` solo llegan por
+`/market/ws` o `/market/stream`; `depthN` por `/public/...` (y todavía por
+`/ws`). `wss://fstream.binance.com/ws/btcusdt@kline_1m` conecta bien y NO
+manda nada, sin error. Datos privados: `/private/ws/<listenKey>`.
+Spot sigue todo en `stream.binance.com:9443`.
+
+### Binance spot ya no tiene listenKey
+
+Retirado el 2026-02-20 (POST/PUT/DELETE `/api/v3/userDataStream`). El flujo de
+usuario va por la WebSocket API (`wss://ws-api.binance.com:443/ws-api/v3`) con
+`userDataStream.subscribe.signature`: params `apiKey`, `timestamp`,
+`recvWindow` firmados HMAC-SHA256 ordenados alfabéticamente (sirve cualquier
+tipo de clave). Los eventos llegan ENVUELTOS: `{"subscriptionId": 0, "event": {...}}`.
+En una cancelación, `c` es el id de la PETICIÓN de cancelar; el de la orden
+original va en `C`. Verificado en testnet: NEW, CANCELED, FILLED (precio de
+llenado `L`, medio = `Z`/`z`, comisión `n`/`N`).
+
+### GRAVE — reloj local desfasado: TODA orden de Binance salía REJECTED — ARREGLADO
+
+El reloj de esta máquina iba ~4,3 s ADELANTADO. Binance rechaza cualquier
+petición firmada con `timestamp` más de 1 s por delante (`-1021`). El stream
+privado fallaba y, peor, `place_order` devolvía `REJECTED` (python-binance
+firma con `time.time()`). Ahora `BinanceBroker` implementa `ServerClock` y en
+`__init__` llama a `sync_clock()`, que fija `client.timestamp_offset` con el
+desfase medido (si falla, avisa y sigue con el reloj local). El stream spot
+re-sincroniza en cada conexión. Efecto secundario: construir un
+`BinanceBroker` hace una petición más (`get_server_time`); la suite de
+web-server pasó de ~21 s a ~39 s por los tests que construyen brokers reales.
+
+⚠ Mirando timestamps en logs de ESTA máquina hay que restar ~4 s: las velas
+de Bitunix parecían llegar 5-6 s tarde y llegan ~1,3 s después del cierre
+(el `ts` del servidor lo delata).
+
+### Bitunix futuros SÍ tiene WebSocket privado de órdenes
+
+La nota de más arriba ("Bitunix no tiene stream de usuario") salió de mirar el
+SDK de PyPI, que solo cubre spot. Futuros tiene `wss://fapi.bitunix.com/private/`
+con login (`sha256(sha256(nonce+timestamp+apiKey)+secret)`, timestamp en
+SEGUNDOS) y canal `order`. Límite: 5 mensajes/s por conexión (pings
+incluidos) -> todas las suscripciones en UN mensaje.
+
+- Al conectar, Bitunix manda primero `{"op":"connect","data":{"result":true}}`.
+  NO es la respuesta al login: tomarla por ella daba por buena cualquier clave
+  (cazado con claves falsas). La respuesta real es `{"op":"login","data":{...,"result":false|true}}`.
+- ⚠ SIN VERIFICAR con cuenta real: `dealAmount` ("Deal amount") se toma como
+  cantidad ejecutada en base, como `tradeQty` en REST. Si fuera el importe en
+  USDT, `filled_qty` saldría multiplicado por el precio. Es lo primero que hay
+  que mirar en la prueba real.
+
+### Bitunix: el kline por WebSocket no dice cuándo cierra una vela
+
+Manda instantáneas cada 500 ms con `o/h/l/c/b/q` y un `ts`, sin hora de
+apertura ni flag de cierre. Sacar la vela cerrada de la última instantánea
+podría perder los trades de los últimos 500 ms. Solución: el WebSocket hace de
+DISPARADOR (cambia `ts // duración`) y la vela exacta se lee por REST (el REST
+la tiene al primer intento, verificado). 3d/1w/1M no tienen duración fija ->
+polling. El spot de Bitunix tiene otra API WebSocket (otro host), no
+implementada: spot va por polling (`native_stream_markets`).
+
+### `_iso_to_ms` desplazaba 4 horas — ARREGLADO antes de publicar
+
+Al recortar los 9 decimales de `2024-05-16T08:13:09.123456789Z`, juntaba también
+los dígitos de la zona (`+00:00`), perdía la zona y `datetime` lo interpretaba en
+hora local (UTC-4). Lo cazó el test con el valor calculado aparte.
+
+### Sin verificar todavía (no hay claves)
+
+- Binance futuros privado (`listenKey`, `ORDER_TRADE_UPDATE`). Además, la cuenta
+  tenía restricción geográfica en futuros.
+- URLs de testnet de futuros de Binance.
+- Canal `order` de Bitunix con una cuenta real (sí el login y su rechazo).

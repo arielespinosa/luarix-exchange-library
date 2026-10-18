@@ -206,6 +206,15 @@ reconecta con espera exponencial y cada exchange implementa solo una sesión).
 
 ## Fase 5 — Binance y Bitunix por WebSocket
 
+**Implementada el 2026-10-18** en `main` (sin commitear). Hecho y verificado
+en vivo: Binance velas/libro spot+futuros, Binance órdenes spot (testnet, de
+extremo a extremo), Bitunix velas/libro futuros, login de Bitunix y su rechazo.
+Pendiente de verificar con claves reales: Binance órdenes futuros, Bitunix
+canal `order`. Herramienta: `scripts/probar_streams.py`. Hallazgos (rutas de
+Binance futuros, fin del listenKey de spot, reloj desfasado, saludo `connect`
+de Bitunix) en `bugs.md`. La tabla de abajo queda como referencia histórica.
+`StreamingMarketDataFeed` listo para que web-server/orchestator lo adopten.
+
 | | Velas | Libro | Órdenes/fills (privado) |
 |---|---|---|---|
 | Binance spot | `<sym>@kline_<tf>` | `<sym>@depth<N>` (ya en arbitraje) | user data stream ⚠ |

@@ -18,6 +18,14 @@ from luarix_exchange.streaming._util import sleep_or_stop, transient_errors
 log = logging.getLogger(__name__)
 
 
+class StreamAuthError(Exception):
+    """El exchange rechazó el login o la suscripción privada (clave inválida,
+    IP fuera de la whitelist, firma mal calculada...). NO es transitorio:
+    reintentar no lo arregla y podría hacer que el exchange bloquee la IP.
+    No hereda de `OSError` a propósito (`PermissionError` sí, y se
+    reintentaría como un fallo de red)."""
+
+
 @dataclass(frozen=True)
 class ReconnectPolicy:
     """Espera entre reintentos: empieza en `backoff_s` y se dobla hasta

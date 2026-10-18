@@ -293,12 +293,18 @@ class SelectionTests(unittest.TestCase):
         self.assertIs(candle_stream(ex), ex)
 
     def test_polling_si_solo_tiene_rest(self):
-        from luarix_exchange.brokers.binance import BinanceBroker
+        from luarix_exchange.capabilities import Account
 
-        broker = BinanceBroker.__new__(BinanceBroker)
-        self.assertIsInstance(candle_stream(broker), PollingCandleStream)
-        self.assertIsInstance(order_book_stream(broker), PollingOrderBookStream)
-        self.assertIsInstance(order_update_stream(broker), PollingOrderUpdateStream)
+        class SoloRest(_FakeMarketData, Account, Exchange):
+            def get_balance(self, market="spot", asset=None): return {}
+            def get_positions(self, market="spot", symbol=None): return []
+            def get_open_orders(self, market="spot", symbol=None): return []
+            def get_order(self, symbol, order_id, market="spot"): raise NotImplementedError
+
+        ex = SoloRest()
+        self.assertIsInstance(candle_stream(ex), PollingCandleStream)
+        self.assertIsInstance(order_book_stream(ex), PollingOrderBookStream)
+        self.assertIsInstance(order_update_stream(ex), PollingOrderUpdateStream)
 
     def test_paper_no_tiene_datos_de_mercado_pero_si_cuenta(self):
         from luarix_exchange.brokers.paper import PaperBroker

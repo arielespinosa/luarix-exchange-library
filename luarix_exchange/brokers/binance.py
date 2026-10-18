@@ -6,7 +6,9 @@ from uuid import uuid4
 from binance import Client
 from binance.exceptions import BinanceAPIException, BinanceOrderException
 
-from luarix_exchange.capabilities import SymbolRulesSource
+import logging
+
+from luarix_exchange.capabilities import ServerClock, SymbolRulesSource
 from luarix_exchange.models.book import OrderBook
 from luarix_exchange.models.brokers import BrokerPosition, Market
 from luarix_exchange.models.rules import SymbolRules
@@ -16,6 +18,7 @@ from luarix_exchange.models.orders import (
 from luarix_exchange.models.orders import Side
 from luarix_exchange.brokers.account_data.binance import BinanceAccountDataProvider
 from luarix_exchange.brokers.base import Broker
+from luarix_exchange.brokers.binance_streams import BinanceStreamsMixin
 from luarix_exchange.brokers.credentials import BrokerCredentials, resolve_credentials
 from luarix_exchange.brokers.market_data.binance import BinanceMarketDataProvider
 
@@ -59,7 +62,7 @@ class SymbolFilters:
     min_notional: float = 10.0
 
 
-class BinanceBroker(Broker, SymbolRulesSource):
+class BinanceBroker(Broker, SymbolRulesSource, ServerClock, BinanceStreamsMixin):
     """Broker que conecta el framework con la API de Binance.
 
     Maneja tres modos de operación controlados por las variables de entorno:
@@ -134,10 +137,35 @@ class BinanceBroker(Broker, SymbolRulesSource):
         self._filters_cache: dict[str, SymbolFilters] = {}
         # Caché de `get_symbol_rules` por mercado (una llamada a exchangeInfo).
         self._rules_cache: dict[Market, dict[str, SymbolRules]] = {}
+        self.sync_clock()
 
     def connect(self) -> None:
         """Verifica que la conexión con Binance está activa (ping)."""
         self.client.ping()
+
+    def server_time_ms(self) -> int:
+        return int(self._client().get_server_time()["serverTime"])
+
+    def sync_clock(self) -> int | None:
+        """Alinea las firmas con el reloj de BINANCE, no con el local.
+
+        Binance rechaza toda petición firmada cuyo `timestamp` vaya más de
+        1 s por delante de su reloj (`-1021 Timestamp for this request was
+        1000ms ahead of the server's time`). Un PC con Windows desfasado ~1 s
+        bastaba para que TODA orden saliera `REJECTED` -- encontrado probando
+        en testnet el 2026-10-18. python-binance suma `timestamp_offset` a
+        cada firma; aquí se fija con la diferencia medida. Si la consulta
+        falla, se avisa y se sigue con el reloj local (no se impide construir
+        el broker sin red)."""
+        try:
+            desfase = self.clock_offset_ms()
+        except Exception as exc:  # noqa: BLE001 -- sin red al construir: no es fatal
+            logging.getLogger(__name__).warning(
+                "binance: no se pudo medir el desfase de reloj (%s: %s); se firma con la hora local",
+                type(exc).__name__, exc)
+            return None
+        self.client.timestamp_offset = desfase
+        return desfase
 
     def _client(self) -> Client:
         """Devuelve el cliente de Binance, inicializando la conexión si es necesario."""

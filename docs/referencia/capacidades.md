@@ -49,18 +49,19 @@ desde la Fase 4; ver [Streaming en vivo](../guia/streaming.md).
 
 Fijada en `tests/test_capabilities.py::BrokerMatrixTests`.
 
-| | `MARKET_DATA` | `SYMBOL_RULES` | `ACCOUNT` | `TRADING` | `DERIVATIVES` | `NATIVE_OCO` | `markets` |
-|---|---|---|---|---|---|---|---|
-| Binance | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | spot, futures |
-| Bitunix | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | spot, futures |
-| Paper | ❌¹ | ❌ | ✅ | ✅ | ❌ | ✅ | spot |
-| MT5 | ❌² | ❌ | ✅ | ✅ | ❌ | ✅³ | spot |
+| | `MARKET_DATA` | `SYMBOL_RULES` | `ACCOUNT` | `TRADING` | `DERIVATIVES` | `NATIVE_OCO` | `SERVER_CLOCK` | streams nativos | `markets` |
+|---|---|---|---|---|---|---|---|---|---|
+| Binance | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | velas, libro, órdenes (spot y futuros) | spot, futures |
+| Bitunix | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | velas, libro, órdenes (solo futuros) | spot, futures |
+| Paper | ❌¹ | ❌ | ✅ | ✅ | ❌ | ✅ | ❌ | — | spot |
+| MT5 | ❌² | ❌ | ✅ | ✅ | ❌ | ✅³ | ❌ | — | spot |
 
 ¹ Las velas le entran por `on_candle`, no por red. ² Tiene `get_ticker` y
 `list_symbols`, pero no velas ni libro. ³ SL/TP sobre la posición.
 
-Ninguno tiene todavía `FEES`, `SERVER_CLOCK` ni streams NATIVOS (WebSocket, Fases 5-6);
-los streams por polling los tienen todos los que tienen `MARKET_DATA`/`ACCOUNT`.
+Ninguno tiene todavía `FEES`. En qué mercado es nativo cada stream lo dice
+`native_stream_markets` (`Exchange.has_native(cap, market)`); donde no lo es,
+la selección usa polling sobre `MARKET_DATA`/`ACCOUNT`.
 
 ## Modelos nuevos (en `Decimal`)
 

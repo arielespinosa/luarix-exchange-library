@@ -102,19 +102,25 @@ class BrokerMatrixTests(unittest.TestCase):
     """La matriz de `docs/referencia/capacidades.md`, fijada."""
 
     TRADING = {Capability.ACCOUNT, Capability.TRADING}
+    STREAMS = {Capability.CANDLE_STREAM, Capability.ORDER_BOOK_STREAM, Capability.ORDER_UPDATE_STREAM}
 
     def test_binance(self):
         from luarix_exchange.brokers.binance import BinanceBroker
 
-        self.assertEqual(BinanceBroker.capabilities(), self.TRADING | {
-            Capability.MARKET_DATA, Capability.SYMBOL_RULES, Capability.DERIVATIVES, Capability.NATIVE_OCO})
+        self.assertEqual(BinanceBroker.capabilities(), self.TRADING | self.STREAMS | {
+            Capability.MARKET_DATA, Capability.SYMBOL_RULES, Capability.DERIVATIVES, Capability.NATIVE_OCO,
+            Capability.SERVER_CLOCK})
+        self.assertTrue(BinanceBroker.has_native(Capability.ORDER_UPDATE_STREAM, "spot"))
         self.assertEqual(BinanceBroker.markets, {Market.SPOT, Market.FUTURES})
 
     def test_bitunix(self):
         from luarix_exchange.brokers.bitunix import BitunixBroker
 
-        self.assertEqual(BitunixBroker.capabilities(), self.TRADING | {
+        self.assertEqual(BitunixBroker.capabilities(), self.TRADING | self.STREAMS | {
             Capability.MARKET_DATA, Capability.SYMBOL_RULES, Capability.DERIVATIVES})
+        # WebSocket solo en futuros; spot va por polling.
+        self.assertTrue(BitunixBroker.has_native(Capability.CANDLE_STREAM, "futures"))
+        self.assertFalse(BitunixBroker.has_native(Capability.CANDLE_STREAM, "spot"))
         self.assertEqual(BitunixBroker.markets, {Market.SPOT, Market.FUTURES})
 
     def test_paper(self):

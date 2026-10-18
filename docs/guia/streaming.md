@@ -11,9 +11,42 @@ order_book_stream(broker)    # ídem con ORDER_BOOK_STREAM / MARKET_DATA
 order_update_stream(broker, symbols=["BTCUSDT"])   # ídem con ORDER_UPDATE_STREAM / ACCOUNT
 ```
 
-Hoy (Fase 4) ningún exchange tiene todavía WebSocket propio en la librería,
-así que todos van por polling. Cuando la Fase 5 añada los de Binance y
-Bitunix, el mismo código pasará a usarlos sin cambios.
+Qué va por WebSocket desde la Fase 5 (`market=` decide):
+
+| | velas | libro | órdenes |
+|---|---|---|---|
+| Binance spot | WebSocket | WebSocket (≤20 niveles) | WebSocket API firmada |
+| Binance futuros | WebSocket (`/market/`) | WebSocket (`/public/`, ≤20) | `listenKey` (`/private/`) |
+| Bitunix futuros | WebSocket como disparador + REST | WebSocket (≤15 niveles) | canal privado `order` |
+| Bitunix spot | polling | polling | polling (necesita `symbols=`) |
+
+Más niveles de libro de los que da el stream (20 Binance, 15 Bitunix) → polling.
+
+```python
+candle_stream(broker, market="futures")     # pasa market para elegir bien en Bitunix
+```
+
+### Probarlo contra un exchange real
+
+```bash
+python scripts/probar_streams.py --exchange bitunix --market futures
+python scripts/probar_streams.py --exchange bitunix --market futures --privado --env ruta/.env
+python scripts/probar_streams.py --exchange binance --market spot --privado --testnet
+```
+
+No coloca órdenes: con `--privado`, coloca o cancela una a mano en la web del
+exchange y mírala llegar.
+
+### Para web-server y orchestator: `StreamingMarketDataFeed`
+
+Misma interfaz que `PollingMarketDataFeed` / `WebSocketMarketDataFeed`
+(`subscribe`/`unsubscribe`/`stop`), pero WebSocket donde lo hay:
+
+```python
+from luarix_exchange.brokers.market_data.live_feed import StreamingMarketDataFeed
+feed = StreamingMarketDataFeed(broker, market="futures")
+feed.subscribe("BTCUSDT", "1h", on_new_candle)
+```
 
 ## Desde código asíncrono (arbitraje)
 

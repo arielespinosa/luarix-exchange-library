@@ -26,6 +26,9 @@ from luarix_exchange.streaming._util import deliver
 log = logging.getLogger(__name__)
 
 OnMessage = Callable[[Any], Awaitable[None] | None]
+# Recibe el socket ya abierto: para login firmado, esperar su respuesta y
+# suscribirse con datos frescos (timestamp, nonce) en CADA reconexión.
+OnOpen = Callable[[Any], Awaitable[None]]
 
 
 def _aiohttp():
@@ -44,6 +47,9 @@ async def websocket_session(
     stop: asyncio.Event,
     *,
     subscribe: Sequence[Any] = (),
+    on_open: OnOpen | None = None,
+    keepalive: Callable[[], Any] | None = None,
+    keepalive_s: float = 20.0,
     heartbeat: float | None = 30.0,
     http_session: Any = None,
     max_msg_size: int = 4 * 1024 * 1024,
@@ -51,7 +57,15 @@ async def websocket_session(
 ) -> None:
     """UNA conexión. Entrega cada mensaje de texto/binario ya decodificado
     como JSON. Vuelve cuando `stop` se activa o el servidor cierra; levanta
-    `ConnectionError` si el socket informa de un error."""
+    `ConnectionError` si el socket informa de un error.
+
+    - `subscribe`: mensajes fijos a mandar al abrir.
+    - `on_open(ws)`: corrutina que se ejecuta tras `subscribe` y antes de leer
+      (login, esperar su respuesta con `ws.receive()`, suscribirse).
+    - `keepalive()`: devuelve el mensaje de ping de APLICACIÓN que algunos
+      exchanges exigen (Bitunix: `{"op": "ping", ...}`); se manda cada
+      `keepalive_s`. Distinto de `heartbeat`, que son pings de protocolo.
+    """
     aiohttp = _aiohttp()
     propia = http_session is None
     http = http_session or aiohttp.ClientSession()
@@ -62,7 +76,10 @@ async def websocket_session(
                     await ws.send_str(mensaje)
                 else:
                     await ws.send_json(mensaje)
+            if on_open is not None:
+                await on_open(ws)
             espera_stop = asyncio.ensure_future(stop.wait())
+            pinger = asyncio.ensure_future(_keepalive(ws, keepalive, keepalive_s)) if keepalive else None
             try:
                 while not stop.is_set():
                     recibir = asyncio.ensure_future(ws.receive())
@@ -80,6 +97,16 @@ async def websocket_session(
                         return
             finally:
                 espera_stop.cancel()
+                if pinger is not None:
+                    pinger.cancel()
     finally:
         if propia:
             await http.close()
+
+
+async def _keepalive(ws: Any, mensaje: Callable[[], Any], cada_s: float) -> None:
+    while True:
+        await asyncio.sleep(cada_s)
+        if ws.closed:
+            return
+        await ws.send_json(mensaje())

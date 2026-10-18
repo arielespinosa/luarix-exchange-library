@@ -5,6 +5,7 @@ from bitunix import BitunixClient
 
 from luarix_exchange.brokers.account_data.bitunix import BitunixAccountDataProvider
 from luarix_exchange.brokers.base import Broker
+from luarix_exchange.brokers.bitunix_streams import BitunixStreamsMixin
 from luarix_exchange.brokers.bitunix_response import BitunixApiError, unwrap
 from luarix_exchange.brokers.credentials import BrokerCredentials, resolve_credentials
 from luarix_exchange.brokers.market_data.bitunix import BitunixMarketDataProvider
@@ -20,7 +21,7 @@ from luarix_exchange.models.orders import Side
 logger = logging.getLogger(__name__)
 
 
-class BitunixBroker(Broker, SymbolRulesSource):
+class BitunixBroker(Broker, SymbolRulesSource, BitunixStreamsMixin):
     """Bitunix: spot y futuros perpetuos USDT-M.
 
     Dos APIs distintas en dos hosts distintos. El paquete `bitunix` de PyPI
@@ -36,6 +37,13 @@ class BitunixBroker(Broker, SymbolRulesSource):
     name = "bitunix"
     label = "Bitunix"
     markets = frozenset({Market.SPOT, Market.FUTURES})
+    # WebSocket solo en FUTUROS (el spot de Bitunix tiene otra API WebSocket,
+    # no implementada): ahí la selección automática usa polling.
+    native_stream_markets = {
+        Capability.CANDLE_STREAM: frozenset({Market.FUTURES}),
+        Capability.ORDER_BOOK_STREAM: frozenset({Market.FUTURES}),
+        Capability.ORDER_UPDATE_STREAM: frozenset({Market.FUTURES}),
+    }
 
     # Bitunix NO tiene OCO: `place_oco_order` levanta NotImplementedError más
     # abajo (su API no expone el endpoint, y el paquete `bitunix` de PyPI es

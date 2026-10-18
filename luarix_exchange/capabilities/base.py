@@ -74,6 +74,20 @@ class Exchange(ABC):
     label: ClassVar[str] = ""
     markets: ClassVar[frozenset[Market]] = frozenset({Market.SPOT})
     unsupported: ClassVar[frozenset[Capability]] = frozenset()
+    # En qué mercados es NATIVO (WebSocket) cada stream. Sin entrada = en todos
+    # sus `markets`. Bitunix: velas/libros/órdenes nativos solo en futuros; su
+    # spot va por polling.
+    native_stream_markets: ClassVar[dict[Capability, frozenset[Market]]] = {}
+
+    @classmethod
+    def has_native(cls, capability: Capability | str, market: Market | str | None = None) -> bool:
+        """¿Tiene la capacidad de stream de forma NATIVA en ese mercado?"""
+        cap = Capability(capability)
+        if cap not in cls.capabilities():
+            return False
+        if market is None:
+            return True
+        return Market(market) in cls.native_stream_markets.get(cap, cls.markets)
 
     @classmethod
     def capabilities(cls) -> frozenset[Capability]:
