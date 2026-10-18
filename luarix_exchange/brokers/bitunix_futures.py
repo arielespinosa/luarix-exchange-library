@@ -46,6 +46,13 @@ CHANGE_LEVERAGE = "/api/v1/futures/account/change_leverage"
 # la API key. Es además el único kline de Bitunix que respeta `limit` y
 # `endTime` -- el de spot los ignora, ver `market_data/bitunix.py`.
 KLINE = "/api/v1/futures/market/kline"
+# Libro y pares de futuros, PÚBLICOS. Verificados contra la API real el
+# 2026-10-16: el libro manda `{"asks": [["precio","cantidad"],...], "bids": ...}`
+# y SOLO acepta `limit` en DEPTH_LIMITS (cualquier otro valor -> `10008
+# Parameter 20 does not match, alternative value ["1","5","15","50","max"]`).
+DEPTH = "/api/v1/futures/market/depth"
+DEPTH_LIMITS = (1, 5, 15, 50)
+TRADING_PAIRS = "/api/v1/futures/market/trading_pairs"
 
 # La cuenta de futuros se consulta por moneda de margen, de una en una (a
 # diferencia de spot, que devuelve todas). USDT es la única realista hoy.
@@ -262,6 +269,27 @@ class BitunixFuturesClient:
         response = requests.get(f"{BASE_URL}{KLINE}", params=params, timeout=self.timeout)
         response.raise_for_status()
         return list(unwrap(response.json(), "la consulta de velas de futuros", on_null=[]) or [])
+
+    def _public_get(self, path: str, params: dict | None, action: str, on_null):
+        # Sin firma, como `kline`: funciona aunque la IP no esté en la whitelist.
+        response = requests.get(f"{BASE_URL}{path}", params=params or {}, timeout=self.timeout)
+        response.raise_for_status()
+        return unwrap(response.json(), action, on_null=on_null)
+
+    def depth(self, symbol: str, limit: int = 20) -> dict:
+        """El libro de futuros con al menos `limit` niveles por lado.
+
+        La API solo acepta 1, 5, 15, 50 o "max": se pide el menor que cubre
+        `limit` (20 -> 50) y quien lo consume recorta. Devuelve el `data`
+        crudo: `{"asks": [[precio, cantidad], ...], "bids": [...]}`."""
+        permitido = next((n for n in DEPTH_LIMITS if n >= limit), "max")
+        return self._public_get(DEPTH, {"symbol": symbol, "limit": permitido},
+                                "la consulta del libro de futuros", on_null={}) or {}
+
+    def trading_pairs(self) -> list[dict]:
+        """Todos los pares de futuros con su precisión (`basePrecision`,
+        `quotePrecision`), `minTradeVolume` y `symbolStatus`."""
+        return list(self._public_get(TRADING_PAIRS, None, "la consulta de pares de futuros", on_null=[]) or [])
 
     # Los ÚNICOS `orderType` que acepta `/futures/trade/place_order`,
     # verificados contra la API real (un valor cualquiera devuelve

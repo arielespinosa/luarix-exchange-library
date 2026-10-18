@@ -1,0 +1,91 @@
+"""Capacidades de datos públicos de mercado: velas, precio, libro, pares,
+reglas de cada par y hora del servidor."""
+
+from __future__ import annotations
+
+import time
+from abc import abstractmethod
+from datetime import datetime
+
+from luarix_exchange.capabilities.base import Capability, CapabilityInterface
+from luarix_exchange.models.book import OrderBook
+from luarix_exchange.models.market import Candle
+from luarix_exchange.models.rules import SymbolRules
+
+
+class MarketData(CapabilityInterface):
+    """Velas, último precio, libro de órdenes y lista de pares (REST,
+    síncrono). Todo acepta `market="spot"|"futures"`."""
+
+    capability = Capability.MARKET_DATA
+
+    @abstractmethod
+    def get_candles(self, symbol: str, interval: str = "1m", limit: int = 100, market: str = "spot") -> list[Candle]:
+        """Las `limit` velas CERRADAS más recientes, de la más antigua a la más nueva."""
+
+    def get_last_candle(self, symbol: str, interval: str = "1m", market: str = "spot") -> Candle | None:
+        """La última vela cerrada, o `None` si el exchange no devolvió ninguna."""
+        candles = self.get_candles(symbol, interval, limit=1, market=market)
+        return candles[-1] if candles else None
+
+    @abstractmethod
+    def get_historical_candles(
+        self,
+        symbol: str,
+        interval: str = "1m",
+        start: datetime | None = None,
+        end: datetime | None = None,
+        limit: int | None = None,
+        market: str = "spot",
+    ) -> list[Candle]:
+        """Velas de un rango de fechas, paginando si hace falta."""
+
+    @abstractmethod
+    def get_ticker(self, symbol: str, market: str = "spot") -> float:
+        """El último precio negociado del par."""
+
+    @abstractmethod
+    def get_order_book(self, symbol: str, limit: int = 20, market: str = "spot") -> OrderBook:
+        """El libro normalizado: `Decimal`, mejores niveles primero, crudo en `.raw`."""
+
+    @abstractmethod
+    def list_symbols(self, market: str = "spot") -> list[str]:
+        """Los pares operables en ese mercado, con el identificador que espera el exchange."""
+
+
+class SymbolRulesSource(CapabilityInterface):
+    """Precisión y mínimos de cada par (step, tick, cantidad e importe mínimos)."""
+
+    capability = Capability.SYMBOL_RULES
+
+    @abstractmethod
+    def get_symbol_rules(self, market: str = "spot") -> dict[str, SymbolRules]:
+        """Reglas de TODOS los pares operables del mercado, por símbolo."""
+
+    def get_symbol_rule(self, symbol: str, market: str = "spot") -> SymbolRules:
+        """Las reglas de un par. Levanta `ValueError` si el par no existe en
+        ese mercado (no devuelve reglas inventadas)."""
+        reglas = self.get_symbol_rules(market)
+        try:
+            return reglas[symbol]
+        except KeyError:
+            raise ValueError(f"{symbol!r} no existe (o no se opera) en el mercado {market}.") from None
+
+
+class ServerClock(CapabilityInterface):
+    """Hora del exchange, para medir latencias con sus marcas de tiempo y
+    firmar peticiones que exigen un reloj sincronizado."""
+
+    capability = Capability.SERVER_CLOCK
+
+    @abstractmethod
+    def server_time_ms(self) -> int:
+        """La hora del exchange, en milisegundos desde epoch."""
+
+    def clock_offset_ms(self) -> int:
+        """hora_exchange ≈ hora_local + offset. Se toma el punto medio de la
+        petición para descontar la mitad del viaje de ida y vuelta."""
+        antes = time.time() * 1000
+        servidor = self.server_time_ms()
+        despues = time.time() * 1000
+        return int(servidor - (antes + despues) / 2)

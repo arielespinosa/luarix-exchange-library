@@ -880,3 +880,73 @@ Misma sesión que la entrada de arriba, verificando el resto de lo que
 Checklists de migración completos en `docs/integracion/orchestator.md` y
 `docs/integracion/web-server.md`.
 
+
+---
+
+## [2026-10-16] Fase 3 — contrato por capacidades
+
+Diseño: `docs/plans/fase3_contrato_capacidades.md`. Lo que conviene no
+re-descubrir:
+
+### El libro de SPOT de Bitunix salía VACÍO, siempre — ARREGLADO
+
+`BitunixMarketDataProvider.get_order_book` llamaba
+`client.get_depth_data(symbol, 2)`. `precision` NO es un número de decimales:
+es el TAMAÑO del agrupamiento de precios (`"0.01"`, `"0.1"`, `"1"`...) y depende
+del par (cada par anuncia sus `precisions` en `/api/spot/v1/common/coin_pair/list`).
+Con `2` la API responde `{"code":"0","msg":"result.success","data":{"asks":[],"bids":[]}}`
+-- éxito y libro vacío, sin ningún error. Nadie lo notó porque nadie leía el
+libro. Ahora se usa la precisión más fina del par (`finest_spot_precision`).
+
+### El libro de FUTUROS de Bitunix: solo `limit` 1, 5, 15, 50 o "max"
+
+`/api/v1/futures/market/depth` es público y funciona (verificado
+2026-10-16), pero cualquier otro `limit` devuelve
+`10008 Parameter 20 does not match, alternative value ["1","5","15","50","max"]`
+-- y 20 es el default de `get_order_book`. `BitunixFuturesClient.depth` pide
+el menor permitido que cubre lo pedido y el broker recorta.
+
+### Los pares de spot de Bitunix vienen en minúsculas
+
+`coin_pair/list` da `"symbol": "btcusdt"`, aunque el resto de la API acepta y
+devuelve mayúsculas. `spot_pairs()` los indexa en MAYÚSCULAS; `list_symbols`
+y `get_symbol_rules` devuelven mayúsculas. (El viejo `list_active` devolvía
+las minúsculas tal cual.)
+
+### Reglas de Bitunix: precisión en número de decimales
+
+`basePrecision=5` -> `step_size=0.00001`, `quotePrecision=2` -> `tick_size=0.01`.
+Validado comparando con el libro real: todos los precios del libro son
+múltiplos exactos del tick calculado, en spot y en futuros. Todavía NO
+contrastado con el rechazo de una orden real. Futuros no publica importe
+mínimo: `min_notional=0`.
+
+### Mecánica de las capacidades (para no romperla)
+
+- Una ABC se registra como "la" capacidad solo si declara
+  `capability = Capability.X` EN SU PROPIO CUERPO. Redeclarar una capacidad ya
+  registrada en otra clase levanta `TypeError` (test incluido).
+- `Broker` hereda TODAS las capacidades de trading por compatibilidad. Un
+  broker que no soporte alguna la pone en `unsupported`; si no, mentiría
+  (Bitunix: `NATIVE_OCO`; Paper y MT5: `MARKET_DATA`, `DERIVATIVES`).
+- `supports_oco`/`supports_futures` son descriptores DERIVADOS
+  (`_DerivedClassFlag`), legibles desde la clase y la instancia. Un doble de
+  test que los fije con un atributo normal sigue funcionando (lo tapa).
+  `tests/test_broker_flags_compat.py` fija los valores de antes de la fase.
+- `ExchangeFactory` guarda RUTAS "modulo:Clase": importarla no carga ningún
+  SDK (test en subproceso limpio). Pedir las capacidades de un exchange SÍ
+  importa su módulo.
+
+### Verificación de la fase
+
+- Librería: 206 tests (164 de antes sin tocar + 42 nuevos).
+- APIs reales (públicas): libro, reglas y `list_symbols` en Binance y Bitunix,
+  spot y futuros.
+- orchestator (rama `fix/position-exit-luarix-exchange`), con las rutas viejas
+  bloqueadas: 1037 passed, mismo fallo preexistente.
+- web-server (`saas`), con orchestator parado: el MISMO conjunto de 21 fallos
+  que la línea base del 2026-10-14 (paridad sin orchestator). Con orchestator
+  arrancado, muestra de paridad (TechnicalRatings, broker modes, MACD,
+  Supertrend): 7/7 OK.
+- Ningún consumidor hereda de `Broker` (comprobado con grep): el abstracto
+  nuevo `list_symbols` no les afecta.

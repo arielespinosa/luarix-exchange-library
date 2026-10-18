@@ -1,12 +1,17 @@
 import logging
+from decimal import Decimal
 
 from bitunix import BitunixClient
 
 from luarix_exchange.brokers.account_data.bitunix import BitunixAccountDataProvider
 from luarix_exchange.brokers.base import Broker
 from luarix_exchange.brokers.bitunix_response import BitunixApiError, unwrap
+from luarix_exchange.brokers.credentials import BrokerCredentials, resolve_credentials
 from luarix_exchange.brokers.market_data.bitunix import BitunixMarketDataProvider
-from luarix_exchange.models.brokers import BrokerPosition
+from luarix_exchange.capabilities import Capability, SymbolRulesSource
+from luarix_exchange.models.book import OrderBook
+from luarix_exchange.models.brokers import BrokerPosition, Market
+from luarix_exchange.models.rules import SymbolRules
 from luarix_exchange.models.orders import (
     Fill, OrderAck, OrderInfo, OrderRequest, OrderStatus, OrderType,
 )
@@ -15,7 +20,7 @@ from luarix_exchange.models.orders import Side
 logger = logging.getLogger(__name__)
 
 
-class BitunixBroker(Broker):
+class BitunixBroker(Broker, SymbolRulesSource):
     """Bitunix: spot y futuros perpetuos USDT-M.
 
     Dos APIs distintas en dos hosts distintos. El paquete `bitunix` de PyPI
@@ -28,9 +33,14 @@ class BitunixBroker(Broker):
     pueden existir.
     """
 
+    name = "bitunix"
+    label = "Bitunix"
+    markets = frozenset({Market.SPOT, Market.FUTURES})
+
     # Bitunix NO tiene OCO: `place_oco_order` levanta NotImplementedError más
     # abajo (su API no expone el endpoint, y el paquete `bitunix` de PyPI es
-    # solo spot). Con `supports_oco = False` el motor deja de intentarlo y
+    # solo spot). Hereda `NativeOco` a través de `Broker`, así que lo declara
+    # NO soportado; de ahí sale `supports_oco = False`, con el que el motor deja de intentarlo y
     # gestiona TP+SL como dos órdenes normales, cancelando él mismo la
     # hermana cuando una llena -- ver `workflows/execution/position_manager.py`
     # y `execution_report_bridge._resolve_order_mode`. Antes de este flag un
@@ -43,8 +53,29 @@ class BitunixBroker(Broker):
     # realmente tiene (antes pasaba `order_id=`/`quantity=`, que no existen,
     # y reventaba con TypeError en la primera cancelación real).
     supports_independent_orders = True
-    supports_oco = False
-    supports_futures = True
+    unsupported = frozenset({Capability.NATIVE_OCO})
+
+    @classmethod
+    def create(
+        cls,
+        credentials: BrokerCredentials | None = None,
+        testnet: bool | None = None,
+        test_order: bool | None = None,
+        trading_mode: str = "testnet",
+        allow_live_trading: bool = False,
+    ) -> "BitunixBroker":
+        """Lo que usa la factory. `testnet` y `test_order` se aceptan y se
+        IGNORAN: Bitunix no tiene testnet. Por eso las credenciales se
+        resuelven con `resolve(False)`: pedirle las de prueba devolvía
+        `("", "")` y la primera llamada fallaba con un `10003 API key
+        inexistente` que no dice nada de la causa real."""
+        api_key, api_secret = resolve_credentials("BITUNIX", credentials).resolve(False)
+        return cls(
+            api_key=api_key,
+            api_secret=api_secret,
+            trading_mode=trading_mode,
+            allow_live_trading=allow_live_trading,
+        )
 
     def __init__(
         self,
@@ -68,28 +99,62 @@ class BitunixBroker(Broker):
     # Market data
     # ─────────────────────────────────────────────
 
-    def get_order_book(self, symbol: str, limit: int = 20, market: str = "spot") -> dict:
-        return self.market_data_provider.get_order_book(symbol, limit, market=market)
+    def get_order_book(self, symbol: str, limit: int = 20, market: str = "spot") -> OrderBook:
+        """Libro normalizado. Futuros manda `[[precio, cantidad], ...]`; spot
+        manda `[{"price", "volume"}, ...]` (ver el proveedor)."""
+        raw = self.market_data_provider.get_order_book(symbol, limit, market=market) or {}
+
+        def niveles(lado: str) -> list[tuple]:
+            return [(n["price"], n["volume"]) if isinstance(n, dict) else (n[0], n[1]) for n in raw.get(lado) or []]
+
+        return OrderBook.from_levels(symbol, market, niveles("bids"), niveles("asks"), depth=limit, raw=raw)
 
     def get_ticker(self, symbol: str, market: str = "spot") -> float:
         return self.market_data_provider.get_last_price(symbol, market=market)
 
-    def list_active(self) -> list:
-        """Los pares operables en SPOT.
+    def list_symbols(self, market: str = "spot") -> list[str]:
+        """Los pares abiertos a la operación en ese mercado, en MAYÚSCULAS.
 
-        Antes devolvía `[]` fijo, que se lee como "este broker no opera
-        nada". El paquete de PyPI sí tiene el endpoint
-        (`get_trading_pairs`), simplemente no se llamaba."""
-        data = unwrap(self.client.get_trading_pairs(), "la consulta de pares operables", on_null=[])
-        pares = []
-        for item in data or []:
-            if isinstance(item, dict):
-                simbolo = item.get("symbol") or item.get("pair")
-                if simbolo:
-                    pares.append(str(simbolo))
-            elif item:
-                pares.append(str(item))
-        return pares
+        (Era `list_active()`, solo spot; antes de eso devolvía `[]` fijo.)"""
+        if Market(market) is Market.FUTURES:
+            return [p["symbol"] for p in self._futures_pairs() if p.get("symbolStatus") == "OPEN"]
+        return [s for s, p in self.market_data_provider.spot_pairs().items() if p.get("isOpen", 1) == 1]
+
+    def _futures_pairs(self) -> list[dict]:
+        return self.market_data_provider.futures.trading_pairs()
+
+    def get_symbol_rules(self, market: str = "spot") -> dict[str, SymbolRules]:
+        """Precisión y mínimos por par, desde las listas PÚBLICAS de pares.
+
+        Bitunix da la precisión como número de decimales (`basePrecision=5`
+        -> step 0.00001; `quotePrecision=2` -> tick 0.01). Forma verificada
+        contra la API el 2026-10-16 y coherente con los precios del libro;
+        todavía NO contrastada con el rechazo de una orden real. El importe
+        mínimo de futuros no lo publica: queda en 0."""
+        mercado = Market(market)
+
+        def paso(decimales) -> Decimal:
+            return Decimal(1).scaleb(-int(decimales or 0))
+
+        if mercado is Market.FUTURES:
+            return {
+                p["symbol"]: SymbolRules(
+                    symbol=p["symbol"], base=p.get("base", ""), quote=p.get("quote", ""),
+                    step_size=paso(p.get("basePrecision")), tick_size=paso(p.get("quotePrecision")),
+                    min_qty=Decimal(str(p.get("minTradeVolume") or "0")), min_notional=Decimal("0"),
+                    market=mercado, raw=p,
+                )
+                for p in self._futures_pairs() if p.get("symbolStatus") == "OPEN"
+            }
+        return {
+            simbolo: SymbolRules(
+                symbol=simbolo, base=p.get("base", ""), quote=p.get("quote", ""),
+                step_size=paso(p.get("basePrecision")), tick_size=paso(p.get("quotePrecision")),
+                min_qty=Decimal(str(p.get("minVolume") or "0")), min_notional=Decimal(str(p.get("minAmount") or "0")),
+                market=mercado, raw=p,
+            )
+            for simbolo, p in self.market_data_provider.spot_pairs().items() if p.get("isOpen", 1) == 1
+        }
 
     # ─────────────────────────────────────────────
     # Account data

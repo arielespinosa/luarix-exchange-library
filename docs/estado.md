@@ -26,6 +26,18 @@ Comprobado en vivo el 2026-08-11, sin credenciales (endpoints públicos):
   bitunix futures  -> 5 velas, ultima 14:00 close=63747.0
   ```
 
+Comprobado en vivo el 2026-10-16 (Fase 3), sin credenciales:
+
+- **`get_order_book` normalizado**, los cuatro caminos (Binance spot/futuros,
+  Bitunix spot/futuros): libros ordenados y con niveles.
+- **`get_symbol_rules`** en los cuatro: los precios reales del libro son
+  múltiplos exactos del `tick_size` calculado (lo que valida la lectura de
+  `basePrecision`/`quotePrecision` de Bitunix como número de decimales).
+- **`list_symbols`** en los cuatro (Binance 1380 spot / 793 futuros; Bitunix
+  545 / 781 ese día).
+- El libro de **spot de Bitunix salía VACÍO**: se pedía `precision=2` y la API
+  respondía `success` con listas vacías. Arreglado (ver `docs/plans/bugs.md`).
+
 Verificado en sesiones anteriores contra la cuenta real de Bitunix:
 
 - La **firma** de `BitunixFuturesClient` (GET y POST).
@@ -84,7 +96,7 @@ Verificado en sesiones anteriores contra la cuenta real de Bitunix:
 | **Sin tipos de stop en futuros** | Solo `LIMIT` y `MARKET`. El stop va adjunto |
 | **Spot no lista todas las órdenes** | Su endpoint exige símbolo. `get_open_orders(market="spot")` levanta |
 | **Kline de spot sin rango** | Devuelve siempre ~201 velas. El histórico sale del kline de **futuros** (precios de perpetuo) |
-| **Libro de futuros sin implementar** | `NotImplementedError`: endpoint no verificado |
+| **Libro de futuros: `limit` solo 1, 5, 15 o 50** | Se pide el menor que cubre lo pedido y se recorta (verificado 2026-10-16) |
 | **Saldo de futuros por moneda de margen** | Una llamada por moneda |
 | **Intervalos desconocidos en spot caen a 1h** | En silencio. Comportamiento heredado |
 

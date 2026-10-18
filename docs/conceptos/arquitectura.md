@@ -80,7 +80,9 @@ vacía, no un fallo tragado.
 
 Cada broker declara qué sabe hacer. Son atributos de clase, no algo que se
 descubra en tiempo de ejecución, para que un motor pueda ramificar **antes** de
-comprometerse:
+comprometerse. Desde la Fase 3, `supports_oco` y `supports_futures` se
+**derivan** de las capacidades y los mercados de la clase (ver
+[Capacidades](../referencia/capacidades.md)); los valores no cambiaron:
 
 ```python
 broker.supports_futures              # ¿tiene cuenta de derivados?

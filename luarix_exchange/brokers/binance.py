@@ -6,14 +6,40 @@ from uuid import uuid4
 from binance import Client
 from binance.exceptions import BinanceAPIException, BinanceOrderException
 
-from luarix_exchange.models.brokers import BrokerPosition
+from luarix_exchange.capabilities import SymbolRulesSource
+from luarix_exchange.models.book import OrderBook
+from luarix_exchange.models.brokers import BrokerPosition, Market
+from luarix_exchange.models.rules import SymbolRules
 from luarix_exchange.models.orders import (
     Entry, Fill, OrderAck, OrderInfo, OrderRequest, OrderStatus, OrderType, TimeInForce,
 )
 from luarix_exchange.models.orders import Side
 from luarix_exchange.brokers.account_data.binance import BinanceAccountDataProvider
 from luarix_exchange.brokers.base import Broker
+from luarix_exchange.brokers.credentials import BrokerCredentials, resolve_credentials
 from luarix_exchange.brokers.market_data.binance import BinanceMarketDataProvider
+
+
+def rules_from_binance_symbol(info: dict, market: Market | str) -> SymbolRules:
+    """`SymbolRules` desde una entrada de `exchangeInfo["symbols"]` (spot o
+    USDT-M futuros: los dos usan los filtros `LOT_SIZE`, `PRICE_FILTER` y
+    `NOTIONAL`/`MIN_NOTIONAL`, con el importe mínimo en `minNotional` en spot
+    y en `notional` en futuros)."""
+    filtros = {f.get("filterType"): f for f in info.get("filters", [])}
+    lot = filtros.get("LOT_SIZE", {})
+    price = filtros.get("PRICE_FILTER", {})
+    notional = filtros.get("NOTIONAL") or filtros.get("MIN_NOTIONAL") or {}
+    return SymbolRules(
+        symbol=info["symbol"],
+        base=info.get("baseAsset", ""),
+        quote=info.get("quoteAsset", ""),
+        step_size=decimal.Decimal(str(lot.get("stepSize", "0"))),
+        tick_size=decimal.Decimal(str(price.get("tickSize", "0"))),
+        min_qty=decimal.Decimal(str(lot.get("minQty", "0"))),
+        min_notional=decimal.Decimal(str(notional.get("minNotional") or notional.get("notional") or "0")),
+        market=Market(market),
+        raw=info,
+    )
 
 
 @dataclass
@@ -33,7 +59,7 @@ class SymbolFilters:
     min_notional: float = 10.0
 
 
-class BinanceBroker(Broker):
+class BinanceBroker(Broker, SymbolRulesSource):
     """Broker que conecta el framework con la API de Binance.
 
     Maneja tres modos de operación controlados por las variables de entorno:
@@ -45,11 +71,34 @@ class BinanceBroker(Broker):
     de Binance sin ejecutarla realmente (útil para verificar parámetros).
     """
 
+    name = "binance"
+    label = "Binance"
+    # OCO nativo (NativeOco, heredado de Broker): `place_oco_order` usa el
+    # endpoint real de Binance y es el exchange quien cancela la pierna que
+    # no se ejecutó. `supports_oco`/`supports_futures` se derivan de esto.
+    markets = frozenset({Market.SPOT, Market.FUTURES})
     supports_independent_orders = True
-    # OCO nativo: `place_oco_order` más abajo usa el endpoint real de Binance
-    # y es el exchange quien cancela la pierna que no se ejecutó.
-    supports_oco = True
-    supports_futures = True
+
+    @classmethod
+    def create(
+        cls,
+        credentials: BrokerCredentials | None = None,
+        testnet: bool | None = True,
+        test_order: bool = True,
+        trading_mode: str = "testnet",
+        allow_live_trading: bool = False,
+    ) -> "BinanceBroker":
+        """Lo que usa la factory: resuelve las credenciales (las pasadas o
+        las del entorno) y elige las de testnet o producción según `testnet`."""
+        api_key, api_secret = resolve_credentials("BINANCE", credentials).resolve(bool(testnet))
+        return cls(
+            api_key=api_key,
+            api_secret=api_secret,
+            testnet=bool(testnet),
+            test_order=test_order,
+            trading_mode=trading_mode,
+            allow_live_trading=allow_live_trading,
+        )
 
     def __init__(
         self,
@@ -83,6 +132,8 @@ class BinanceBroker(Broker):
         self.account_data_provider = BinanceAccountDataProvider(client=self.client)
         # Caché de filtros por símbolo para evitar llamadas repetidas a la API
         self._filters_cache: dict[str, SymbolFilters] = {}
+        # Caché de `get_symbol_rules` por mercado (una llamada a exchangeInfo).
+        self._rules_cache: dict[Market, dict[str, SymbolRules]] = {}
 
     def connect(self) -> None:
         """Verifica que la conexión con Binance está activa (ping)."""
@@ -98,9 +149,29 @@ class BinanceBroker(Broker):
     # General endpoints
     # ─────────────────────────────────────────────
 
-    def list_active(self):
-        exchange_info = self.client.get_exchange_info()
-        return [symbol["symbol"] for symbol in exchange_info["symbols"]]
+    def _exchange_info(self, market: str) -> dict:
+        if Market(market) is Market.FUTURES:
+            return self._client().futures_exchange_info()
+        return self._client().get_exchange_info()
+
+    def list_symbols(self, market: str = "spot") -> list[str]:
+        """Los pares en estado TRADING del mercado pedido."""
+        return [s["symbol"] for s in self._exchange_info(market).get("symbols", [])
+                if s.get("status") == "TRADING"]
+
+    def get_symbol_rules(self, market: str = "spot") -> dict[str, SymbolRules]:
+        """Reglas de todos los pares en TRADING, cacheadas por mercado (una
+        sola llamada a exchangeInfo). Spot y futuros tienen reglas DISTINTAS
+        para el mismo par."""
+        mercado = Market(market)
+        cache = self.__dict__.setdefault("_rules_cache", {})
+        if mercado not in cache:
+            cache[mercado] = {
+                s["symbol"]: rules_from_binance_symbol(s, mercado)
+                for s in self._exchange_info(mercado).get("symbols", [])
+                if s.get("status") == "TRADING"
+            }
+        return cache[mercado]
 
     # ─────────────────────────────────────────────
     # Market data (minimal — only what the strategy needs)
@@ -110,9 +181,14 @@ class BinanceBroker(Broker):
         """Devuelve el último precio de mercado para el símbolo indicado."""
         return self.market_data_provider.get_last_price(symbol, market=market)
 
-    def get_order_book(self, symbol: str, limit: int = 20, market: str = "spot") -> dict:
-        """Devuelve el order book (bids y asks) para el símbolo indicado."""
-        return self.market_data_provider.get_order_book(symbol, limit, market=market)
+    def get_order_book(self, symbol: str, limit: int = 20, market: str = "spot") -> OrderBook:
+        """Libro normalizado. Binance manda `[[precio, cantidad], ...]` en texto
+        y `lastUpdateId` como número de secuencia, igual en spot y futuros."""
+        raw = self.market_data_provider.get_order_book(symbol, limit, market=market)
+        return OrderBook.from_levels(
+            symbol, market, raw.get("bids", []), raw.get("asks", []),
+            depth=limit, update_id=raw.get("lastUpdateId"), raw=raw,
+        )
 
     # ─────────────────────────────────────────────
     # Account data

@@ -1,16 +1,42 @@
 from __future__ import annotations
-from abc import ABC, abstractmethod
+
+import warnings
+from abc import abstractmethod
 from datetime import datetime
-from typing import Callable
+from typing import Any, Callable
 
 from luarix_exchange.brokers.account_data.base import AccountDataProvider
 from luarix_exchange.brokers.market_data.provider import DataFormat, MarketDataProvider
-from luarix_exchange.models.brokers import BrokerPosition
+from luarix_exchange.capabilities import (
+    Account,
+    Capability,
+    Derivatives,
+    Exchange,
+    MarketData,
+    NativeOco,
+    Trading,
+)
+from luarix_exchange.models.book import OrderBook
+from luarix_exchange.models.brokers import BrokerPosition, Market
 from luarix_exchange.models.market import Candle
 from luarix_exchange.models.orders import Entry, Fill, OrderAck, OrderInfo, OrderRequest, OrderStatus
 from luarix_exchange.models.orders import Side
 
-class Broker(ABC):
+
+class _DerivedClassFlag:
+    """Flag de solo lectura calculado desde la CLASE, que funciona igual
+    leído desde la clase (`BinanceBroker.supports_oco`) que desde una
+    instancia. Una subclase (o un doble de test) puede seguir fijándolo con
+    un atributo normal: el atributo de clase tapa a este descriptor."""
+
+    def __init__(self, compute: Callable[[type], Any]):
+        self._compute = compute
+
+    def __get__(self, obj: Any, owner: type) -> Any:
+        return self._compute(owner)
+
+
+class Broker(Exchange, MarketData, Account, Trading, Derivatives, NativeOco):
     """La interfaz única detrás de la que vive cualquier broker.
 
     Todo lo que hace falta para OPERAR una cuenta, con la misma firma para
@@ -59,24 +85,28 @@ class Broker(ABC):
     # package -- same relationship already documented on that model.
     supports_independent_orders: bool = False
 
-    # ¿`place_oco_order()` de esta clase habla con un OCO NATIVO del exchange
-    # (una sola llamada, y el propio exchange cancela la pierna que no se
-    # ejecutó), o levanta NotImplementedError?
-    #
-    # `False` por defecto a propósito: un broker nuevo no tiene OCO hasta que
-    # alguien lo implementa y lo declara, y con este flag en False el motor
-    # coloca TP y SL como dos órdenes normales y se encarga él mismo de
-    # cancelar la hermana cuando una llena (ver
-    # `workflows/execution/position_manager.py`). Antes de este flag, un
-    # `order_mode="oco"` contra Bitunix reventaba con NotImplementedError en
-    # el instante del fill -- o sea, con la posición ya abierta y sin
-    # protección, el peor momento posible para descubrirlo.
-    supports_oco: bool = False
+    # Desde la Fase 3 (contrato por capacidades) un `Broker` HEREDA todas las
+    # capacidades de trading, también `NativeOco`; el que no tiene OCO nativo
+    # de verdad lo declara en `unsupported` (ver BitunixBroker). Así un broker
+    # nuevo tiene que decidir explícitamente.
+    unsupported = frozenset()
 
-    # ¿Tiene este broker cuenta de derivados? `get_balance("futures")` y
-    # compañía levantan si es False, en vez de devolver los datos de spot en
+    # ¿`place_oco_order()` habla con un OCO NATIVO del exchange (una sola
+    # llamada, y el propio exchange cancela la pierna que no se ejecutó), o
+    # levanta NotImplementedError? DERIVADO de `capabilities()`.
+    #
+    # Con esto en False el motor coloca TP y SL como dos órdenes normales y
+    # se encarga él mismo de cancelar la hermana cuando una llena (ver
+    # `workflows/execution/position_manager.py` de web-server). Antes de este
+    # flag, un `order_mode="oco"` contra Bitunix reventaba con
+    # NotImplementedError en el instante del fill -- o sea, con la posición
+    # ya abierta y sin protección.
+    supports_oco = _DerivedClassFlag(lambda cls: Capability.NATIVE_OCO in cls.capabilities())
+
+    # ¿Tiene cuenta de derivados? DERIVADO de `markets`. `get_balance("futures")`
+    # y compañía levantan si no, en vez de devolver los datos de spot en
     # silencio -- que es el error que un grafo mal configurado no nota nunca.
-    supports_futures: bool = False
+    supports_futures = _DerivedClassFlag(lambda cls: Market.FUTURES in cls.markets)
 
     @abstractmethod
     def connect(self) -> None:
@@ -86,25 +116,25 @@ class Broker(ABC):
         pass
 
     @abstractmethod
-    def get_order_book(self, symbol: str, limit: int = 20, market: str = "spot") -> dict:
-        """La profundidad del libro (bids y asks) para un par.
+    def get_order_book(self, symbol: str, limit: int = 20, market: str = "spot") -> OrderBook:
+        """El libro de un par, NORMALIZADO (desde la Fase 3).
 
-        Se devuelve el diccionario CRUDO del exchange, sin normalizar: cada
-        uno usa su propia forma y quien lee un libro suele querer los datos
-        exactos. Los futuros de Bitunix levantan `NotImplementedError` --
-        su endpoint no está verificado y devolver el de spot sería mentir.
+        Antes devolvía el diccionario crudo de cada exchange, con formas
+        distintas (Binance listas de texto, Bitunix spot dicts
+        `{"price","volume"}`). Ahora siempre `OrderBook`: `Decimal`, bids
+        del mejor al peor, asks del mejor al peor, y el crudo entero en
+        `.raw`. Nadie consumía el formato viejo cuando se cambió.
 
         Args:
             symbol: Par (ej: "BTCUSDT").
             limit:  Cuántos niveles por lado.
             market: "spot" o "futures".
         """
-        pass
 
-    @abstractmethod
     def list_active(self) -> list:
-        """Los símbolos que este broker puede operar."""
-        pass
+        """DEPRECADO: usa `list_symbols(market)`. Equivale a `list_symbols("spot")`."""
+        warnings.warn("`list_active()` está deprecado; usa `list_symbols(market)`.", DeprecationWarning, stacklevel=2)
+        return self.list_symbols()
 
     # ── Velas ───────────────────────────────────────────────────────────
     # Concretos y delegando en `market_data_provider`: un broker que ya

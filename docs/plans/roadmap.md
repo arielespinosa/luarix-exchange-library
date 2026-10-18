@@ -73,24 +73,73 @@ Movimiento **sin cambios de comportamiento**, solo rutas de import.
 **Pendiente del usuario:** commit + push de los dos repos. Hasta el push, un
 `pip install` limpio del framework falla, porque su dependencia apunta a
 `git+https://github.com/arielespinosa/luarix-exchange-library.git`.
+→ **Hecho 2026-10-14**: los dos repos subidos. Comprobado en venvs limpios:
+la librería se instala desde GitHub (163 tests en verde, también con pandas
+3.0.6) y el framework desde GitHub se trae la librería solo.
 
 ## Fase 2 — Consumidores importan `luarix_exchange` directamente
 
-- [ ] `luarix-orchestator`: cambiar sus imports de `luarix_trading.brokers.*`,
-      `core.models.{orders,signals.Side,market.Candle}` a `luarix_exchange.*`
-      (~40 sitios, ver `grep -rn "luarix_trading" workflow rpc tests`).
-      Añadir `luarix-exchange-library` a su extra `adapters`.
-- [ ] `luarix-web-server`: igual (~30 ficheros). Ojo: su `requirements.txt`
-      fija el framework a un commit (`@1ff977b`), así que hoy NO le afecta
-      nada; al subir el pin, añadir también la librería.
-      ⚠ Reemplazar la **ruta completa**, nunca la subcadena: ya hubo un
-      find-and-replace que convirtió `append` en `luarix_trading_frameworkend`.
+- [x] `luarix-orchestator` (2026-10-14, rama `feat/luarix-exchange-library`,
+      sin commitear): 21 ficheros, imports por ruta completa, extra
+      `adapters` con la librería, README. Solo sigue usando del framework
+      `luarix_trading.core.stats`. Verificado con un plugin de pytest que
+      BLOQUEA las rutas viejas (los alias taparían un olvido): 1026 passed,
+      mismo fallo preexistente ajeno. Detalle en su `docs/plans/bugs.md`.
+      Rama subida por el usuario; se mezcla a `develop` cuando lo coordine.
+- [x] `luarix-web-server` (2026-10-14, rama `feat/luarix-exchange-library`
+      desde `saas`, sin commitear): 66 imports en 30 ficheros,
+      `requirements.txt` con la librería fijada, verificación de
+      `deploy-linux.sh`. Del framework solo usa `core.stats` y `core.sizing`.
+      Verificado con las rutas viejas bloqueadas: mismos resultados que antes
+      del cambio. Detalle en su `docs/plans/bugs.md`.
+- [x] Framework: `pyproject.toml` fija la librería a `e6888ca` (commit
+      `62f12db` del framework, 2026-10-14). `requirements.txt` de web-server
+      Y de orchestator fijan librería `e6888ca` + framework `62f12db`;
+      instalados los dos en venvs limpios desde GitHub, sin conflicto.
+      READMEs de los cuatro repos explican la instalación (git y editable).
+- [ ] luarix-arbitrage-web-server: NO se añade todavía a su `requirements`
+      (no usa la librería hasta la Fase 7; arrastraría pandas/numpy a su
+      despliegue sin motivo). Se añade al empezar la Fase 7.
+- [ ] Mezclar orchestator → `develop` y web-server → `saas` a la vez
+      (planificado por el usuario para el 2026-10-15), avisando al equipo de
+      que instale la librería.
+- [ ] Alias del framework: NO borrar hasta que todo el equipo haya
+      instalado la librería (decisión del usuario, 2026-10-14).
 - [ ] Cuando ninguno importe ya `luarix_trading.brokers`: borrar los alias del
       framework y `tests/test_exchange_aliases.py`.
 
+**Regla de versiones (aprendida por las malas con pip):** la librería va
+fijada por commit con la MISMA URL exacta en el `pyproject.toml` del framework
+y en el `requirements.txt` de web-server. Si difieren en algo (aunque sea el
+`@sha`), pip aborta con `ResolutionImpossible`. Subir la librería = cambiar el
+sha en los dos repos a la vez.
+
 Se puede hacer en paralelo con las fases siguientes; no las bloquea.
 
+### Pendientes ajenos detectados durante la Fase 2 (no son de esta librería)
+
+- ~~orchestator no soporta `PositionExit`~~ → **resuelto 2026-10-16**: Ramon
+  mezcló `TrailingStopAction` a `develop` (desde
+  `feat/tradingview-strategy-templates-batch-a`). Esa rama traía un import
+  viejo (`luarix_trading.brokers.paper`), corregido en la rama
+  `fix/position-exit-luarix-exchange` de orchestator. Con ella, los tests de
+  paridad de trailing de web-server (`TechnicalRatingsParityTests`,
+  `test_paper_runner_tv_broker_modes`) pasan.
+- orchestator: `test_broker_state_snapshot_reflects_filled_position_and_pending_limit_order`
+  importa `_advance_broker_clock`, que no existe.
+- En Windows, la suite de web-server agota los puertos efímeros hacia Redis
+  (`Errno 10048`); los tests sueltos pasan.
+
 ## Fase 3 — Contrato por capacidades
+
+**Diseño detallado: `docs/plans/fase3_contrato_capacidades.md`.**
+**Implementada el 2026-10-16/17** en la rama `feat/fase3-capacidades` (sin
+commitear): capacidades, `Exchange`, `Broker` como unión, modelos `Decimal`
+(`OrderBook`, `SymbolRules`, `CommissionRates`, `OrderUpdate`), `get_order_book`
+normalizado, `list_symbols`, `get_symbol_rules` en Binance y Bitunix,
+`ExchangeFactory`. Verificación en `docs/plans/bugs.md` (entrada del
+2026-10-16). Los exchanges que no sean un `Broker` completo (Kraken, Bitfinex)
+irán en `luarix_exchange/exchanges/` (ver `docs/guia/nuevo-exchange.md`).
 
 Partir `Broker` en interfaces pequeñas (ABC, para que `isinstance` funcione y
 la factory pueda decir qué sabe hacer cada exchange):
@@ -117,12 +166,13 @@ la factory pueda decir qué sabe hacer cada exchange):
   actuales (`float`) no se tocan en esta fase: cambiarles el tipo rompería a
   orchestator y web-server. Decisión a revisar al final.
 
-**Decisión abierta D1 — síncrono vs asíncrono.** Propuesta: los **streams** son
-`asyncio` (`aiohttp`, que arbitraje ya usa para todo), con un puente que los
-corre en un hilo para los consumidores síncronos (orchestator, web-server). El
-REST existente sigue síncrono. El REST nuevo (reglas, comisiones, Kraken,
-Bitfinex) se escribe async con una fachada síncrona generada. Confirmar con el
-usuario antes de empezar la Fase 4.
+**D1 — síncrono vs asíncrono: DECIDIDO HÍBRIDO (usuario, 2026-10-16).**
+REST **síncrono** para todo, también el nuevo (reglas, comisiones, Kraken,
+Bitfinex): es lo que usan web-server y orchestator sin cambios, y arbitraje
+llama sus pocas consultas REST con `asyncio.to_thread`. **Streams
+asíncronos** (`asyncio` + `aiohttp`) con un puente a callbacks en hilo para
+los consumidores síncronos. Se descartó todo-async (reescribir web-server y
+orchestator) y todo-sync (reescribir el motor de arbitraje).
 
 ## Fase 4 — Infraestructura de streaming
 

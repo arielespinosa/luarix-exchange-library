@@ -135,11 +135,11 @@ broker.get_balance("futures")                 # {'USDT': 1500.0}  (la de por def
 broker.get_balance("futures", asset="USDC")   # una llamada DISTINTA
 ```
 
-### El libro de futuros de Bitunix no está implementado
+### El libro de futuros de Bitunix solo acepta ciertos tamaños
 
-Levanta `NotImplementedError` a propósito: su endpoint no se ha verificado
-contra la API real y devolver el de spot sería mentir sobre qué mercado se está
-mirando.
+`/api/v1/futures/market/depth` (público, verificado el 2026-10-16) solo acepta
+`limit` 1, 5, 15, 50 o `max`. `get_order_book` pide el menor que cubre lo
+pedido y recorta.
 
 ## Modo cobertura (HEDGE) vs neteo (ONE_WAY)
 

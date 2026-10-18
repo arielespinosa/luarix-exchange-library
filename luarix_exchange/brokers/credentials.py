@@ -160,3 +160,28 @@ class BrokerCredentials:
             return ""
 
         return cls(**{campo: primero(claves) for campo, claves in nombres.items()})
+
+
+def resolve_credentials(exchange: str, credentials: BrokerCredentials | None) -> BrokerCredentials:
+    """Las credenciales pasadas o, si no hay, las del entorno / `.env`.
+
+    `credentials` puede llegar como un objeto VACÍO (todos los campos en "")
+    desde un backend que aún no tiene claves para ese usuario.
+    `BrokerCredentials.__bool__` lo detecta, así que ese caso también cae al
+    entorno en vez de mandar cadenas vacías al exchange.
+
+    Raises:
+        ValueError: si no hay credenciales en ningún sitio, nombrando las
+            variables que hay que definir.
+    """
+    if credentials:
+        return credentials
+    clave = str(exchange).upper()
+    del_entorno = BrokerCredentials.from_env(clave)
+    if del_entorno:
+        return del_entorno
+    raise ValueError(
+        f"No hay credenciales para {clave}. Pásalas con "
+        f"`credentials=BrokerCredentials(api_key=..., api_secret=...)`, o define "
+        f"{clave}_API_KEY y {clave}_API_SECRET en el entorno o en el .env."
+    )

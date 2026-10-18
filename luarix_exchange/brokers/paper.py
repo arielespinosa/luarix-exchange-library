@@ -10,6 +10,7 @@ from typing import Callable, Optional
 import pandas as pd
 
 from luarix_exchange.brokers.base import Broker
+from luarix_exchange.capabilities import Capability
 from luarix_exchange.models.brokers import BrokerPosition
 from luarix_exchange.models.market import Candle
 from luarix_exchange.models.orders import (
@@ -438,11 +439,15 @@ class PaperBroker(Broker):
     toca el precio objetivo.
     """
     DATA_PATH = "backtests_data"
+    name = "paper"
+    label = "Paper Broker"
     supports_independent_orders = True
     # El simulador implementa OCO de verdad (`place_oco_order` + la
     # cancelación de la pierna hermana en `_cancel_other_leg`), así que se
-    # comporta como Binance y no como Bitunix.
-    supports_oco = True
+    # comporta como Binance y no como Bitunix: NativeOco SÍ (y de ahí
+    # `supports_oco = True`). No tiene datos de mercado por red (las velas
+    # entran por `on_candle`) ni cuenta de derivados.
+    unsupported = frozenset({Capability.MARKET_DATA, Capability.DERIVATIVES})
 
     #: `hedge`: cada fill que no es pata de OCO es una entrada independiente
     #: (comportamiento histórico). `single`: una sola posición por símbolo,
@@ -516,7 +521,8 @@ class PaperBroker(Broker):
             options[key] = value
         return options
 
-    def list_active(self) -> list:
+    def list_symbols(self, market: str = "spot") -> list[str]:
+        """Los símbolos con velas cargadas (`load_csv`)."""
         return list(self._candles.keys())
 
     # ── Carga de datos históricos ────────────────────────────────────────────
@@ -565,8 +571,10 @@ class PaperBroker(Broker):
     def get_ticker(self, symbol: str, market: str = "spot") -> float:
         return self._last_close
 
-    def get_order_book(self, symbol: str, limit: int = 20, market: str = "spot") -> dict:
-        return {}
+    def get_order_book(self, symbol: str, limit: int = 20, market: str = "spot"):
+        # Antes devolvía `{}`, que se lee como "libro vacío". El simulador no
+        # tiene libro: resuelve los fills contra el rango de cada vela.
+        raise NotImplementedError("El Paper Broker no tiene libro de órdenes: llena contra el rango high/low de cada vela.")
 
     def get_balance(self, market: str = "spot", asset: str | None = None) -> dict[str, float]:
         # `market` se ignora: el broker simulado tiene una sola bolsa de

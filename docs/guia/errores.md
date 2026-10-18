@@ -133,7 +133,7 @@ Un broker que no sabe hacer algo. Nunca devuelve vacío — ver
 | `Bitunix no tiene OCO nativo...` | Usa `tp_price`/`sl_price` adjuntos |
 | `MT5Broker.update_order todavía no sabe modificar...` | Sin argumentos, cancela |
 | `El apalancamiento solo existe en la cuenta de futuros.` | `market="spot"` |
-| `El libro de órdenes de los futuros de Bitunix no está implementado` | Endpoint sin verificar |
+| `El Paper Broker no tiene libro de órdenes...` | El simulador llena contra el rango de cada vela; no hay libro |
 
 ---
 
