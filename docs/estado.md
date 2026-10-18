@@ -49,6 +49,31 @@ credenciales, a través del puente síncrono (`StreamRunner`):
 - **`PollingMarketDataFeed` iba una vela tarde** (emitía la penúltima vela
   cerrada). Arreglado; ver `docs/plans/bugs.md`.
 
+Comprobado en vivo el 2026-10-18 (Bybit, OKX, Gate, HTX, KuCoin y MEXC,
+portados de arbitraje), sin claves:
+
+- Reglas completas en los seis (527-2201 pares), libros por WebSocket sin un
+  solo libro inválido, latencias medianas 102-168 ms (HTX ~320 ms por su reloj).
+- Activos con redes: Gate 3015, HTX 1169, KuCoin 2167.
+- El motor de arbitraje evaluó ciclos triangulares en los 9 exchanges.
+- `measure_order_roundtrip_ms` de Binance en testnet (4 órdenes, ~210 ms).
+- Sin verificar: comisiones de los seis y órdenes de prueba de Bybit/OKX (claves).
+
+Comprobado en vivo el 2026-10-18 (Fase 6, Kraken y Bitfinex), sin claves:
+
+- **Kraken**: 1365 pares, reglas, precio, libro y velas REST (solo cerradas,
+  según `last`), 857 activos con su estado; 2429 libros por WebSocket con el
+  checksum verificado en todos; velas cerradas por WebSocket en su minuto.
+- **Bitfinex**: 180 pares, precio, libro, velas REST (columnas O/C/H/L
+  comprobadas), histórico paginado de 500 días (11.991 velas de 1h); 2400
+  libros por WebSocket con checksum; velas cerradas por WebSocket.
+- **Reloj**: Kraken, Bitfinex y Binance midieron los tres ~−4,3 s (el desfase
+  real de la máquina de pruebas): las tres estimaciones coinciden.
+- **Arbitraje**: su motor evaluó ciclos triangulares sobre libros de la
+  librería (Kraken, Bitfinex, Binance), latencias medianas 109-134 ms.
+- **Comisiones de Binance**: `/api/v3/account/commission` en testnet.
+- Sin verificar: comisiones de Kraken y Bitfinex (necesitan claves).
+
 Comprobado en vivo el 2026-10-18 (Fase 5, WebSockets):
 
 - **Binance**, spot y futuros: velas cerradas (`kline`, `x=true`) y libro

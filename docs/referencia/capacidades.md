@@ -36,6 +36,8 @@ broker.require(Capability.NATIVE_OCO)    # NotImplementedError: Bitunix no sopor
 | `DERIVATIVES` | `Derivatives` | `set_leverage` |
 | `NATIVE_OCO` | `NativeOco` | `place_oco_order`, `cancel_oco`, `update_oco` |
 | `FEES` | `Fees` | `get_commissions(symbols, market)` → `dict[str, CommissionRates]` |
+| `ASSET_INFO` | `AssetInfo` | `list_assets()` → `dict[str, AssetListing]` |
+| `ORDER_ROUNDTRIP` | `OrderRoundtripProbe` | `measure_order_roundtrip_ms(credentials, samples)` en testnet/demo |
 | `SERVER_CLOCK` | `ServerClock` | `server_time_ms()`, `clock_offset_ms()` |
 | `CANDLE_STREAM` | `CandleStream` | `async stream_candles(...)` |
 | `ORDER_BOOK_STREAM` | `OrderBookStream` | `async stream_order_books(...)` |
@@ -52,14 +54,21 @@ Fijada en `tests/test_capabilities.py::BrokerMatrixTests`.
 | | `MARKET_DATA` | `SYMBOL_RULES` | `ACCOUNT` | `TRADING` | `DERIVATIVES` | `NATIVE_OCO` | `SERVER_CLOCK` | streams nativos | `markets` |
 |---|---|---|---|---|---|---|---|---|---|
 | Binance | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | velas, libro, órdenes (spot y futuros) | spot, futures |
+| Kraken | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | ✅ | velas, libro | spot |
+| Bitfinex | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | ✅ | velas, libro | spot |
+| Bybit, OKX¹ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ✅ | libro | spot |
+| Gate, HTX, KuCoin, MEXC | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ✅ | libro | spot |
 | Bitunix | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | velas, libro, órdenes (solo futuros) | spot, futures |
 | Paper | ❌¹ | ❌ | ✅ | ✅ | ❌ | ✅ | ❌ | — | spot |
 | MT5 | ❌² | ❌ | ✅ | ✅ | ❌ | ✅³ | ❌ | — | spot |
 
-¹ Las velas le entran por `on_candle`, no por red. ² Tiene `get_ticker` y
+¹ Bybit y OKX además `ORDER_ROUNDTRIP` (testnet / demo), como Binance. Los seis tienen `FEES` y `ASSET_INFO`.
+
+¹ (Paper) Las velas le entran por `on_candle`, no por red. ² Tiene `get_ticker` y
 `list_symbols`, pero no velas ni libro. ³ SL/TP sobre la posición.
 
-Ninguno tiene todavía `FEES`. En qué mercado es nativo cada stream lo dice
+`FEES`: Binance, Kraken y Bitfinex. `ASSET_INFO`: Kraken (con estado de
+depósitos/retiradas) y Bitfinex (deducido de sus pares). En qué mercado es nativo cada stream lo dice
 `native_stream_markets` (`Exchange.has_native(cap, market)`); donde no lo es,
 la selección usa polling sobre `MARKET_DATA`/`ACCOUNT`.
 

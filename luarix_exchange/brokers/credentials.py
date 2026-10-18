@@ -118,6 +118,24 @@ class BrokerCredentials:
             "test_api_key": ("BITUNIX_TEST_API_KEY",),
             "test_api_secret": ("BITUNIX_TEST_API_SECRET",),
         },
+        # Kraken y Bitfinex: sin testnet de spot. Para datos públicos no hacen
+        # falta claves; para comisiones bastan claves de SOLO LECTURA.
+        "KRAKEN": {"api_key": ("KRAKEN_API_KEY",), "api_secret": ("KRAKEN_API_SECRET",),
+                   "test_api_key": (), "test_api_secret": ()},
+        "BITFINEX": {"api_key": ("BITFINEX_API_KEY",), "api_secret": ("BITFINEX_API_SECRET",),
+                     "test_api_key": (), "test_api_secret": ()},
+        # Portados de arbitraje. `test_*`: testnet de Bybit / modo demo de OKX
+        # (solo para medir la ida y vuelta de una orden). OKX y KuCoin firman
+        # además con una passphrase.
+        "BYBIT": {"api_key": ("BYBIT_API_KEY",), "api_secret": ("BYBIT_API_SECRET",),
+                  "test_api_key": ("BYBIT_TESTNET_API_KEY",), "test_api_secret": ("BYBIT_TESTNET_API_SECRET",)},
+        "OKX": {"api_key": ("OKX_API_KEY",), "api_secret": ("OKX_API_SECRET",), "passphrase": ("OKX_API_PASSPHRASE",),
+                "test_api_key": ("OKX_DEMO_API_KEY",), "test_api_secret": ("OKX_DEMO_API_SECRET",)},
+        "KUCOIN": {"api_key": ("KUCOIN_API_KEY",), "api_secret": ("KUCOIN_API_SECRET",),
+                   "passphrase": ("KUCOIN_API_PASSPHRASE",), "test_api_key": (), "test_api_secret": ()},
+        "GATE": {"api_key": ("GATE_API_KEY",), "api_secret": ("GATE_API_SECRET",), "test_api_key": (), "test_api_secret": ()},
+        "HTX": {"api_key": ("HTX_API_KEY",), "api_secret": ("HTX_API_SECRET",), "test_api_key": (), "test_api_secret": ()},
+        "MEXC": {"api_key": ("MEXC_API_KEY",), "api_secret": ("MEXC_API_SECRET",), "test_api_key": (), "test_api_secret": ()},
     }
 
     @classmethod

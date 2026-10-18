@@ -109,7 +109,7 @@ class BrokerMatrixTests(unittest.TestCase):
 
         self.assertEqual(BinanceBroker.capabilities(), self.TRADING | self.STREAMS | {
             Capability.MARKET_DATA, Capability.SYMBOL_RULES, Capability.DERIVATIVES, Capability.NATIVE_OCO,
-            Capability.SERVER_CLOCK})
+            Capability.SERVER_CLOCK, Capability.FEES, Capability.ORDER_ROUNDTRIP})
         self.assertTrue(BinanceBroker.has_native(Capability.ORDER_UPDATE_STREAM, "spot"))
         self.assertEqual(BinanceBroker.markets, {Market.SPOT, Market.FUTURES})
 
@@ -143,11 +143,12 @@ class BrokerMatrixTests(unittest.TestCase):
 
 class ExchangeFactoryTests(unittest.TestCase):
     def test_available(self):
-        self.assertEqual(ExchangeFactory.available(), ["binance", "bitunix", "mt5", "paper"])
+        self.assertEqual(ExchangeFactory.available(), ["binance", "bitfinex", "bitunix", "bybit", "gate", "htx", "kraken",
+                                                       "kucoin", "mexc", "mt5", "okx", "paper"])
 
     def test_nombre_desconocido_levanta_y_nombra_los_disponibles(self):
-        with self.assertRaisesRegex(ValueError, "binance, bitunix"):
-            ExchangeFactory.create("kucoin")
+        with self.assertRaisesRegex(ValueError, "binance, bitfinex, bitunix, bybit"):
+            ExchangeFactory.create("exmo")
 
     def test_capacidades_sin_instanciar_ni_credenciales(self):
         self.assertNotIn(Capability.NATIVE_OCO, ExchangeFactory.capabilities("bitunix"))

@@ -89,8 +89,12 @@ nav:
       - Bitunix: brokers/bitunix.md
       - PaperBroker: brokers/paper.md
       - MetaTrader 5: brokers/mt5.md
+      - Kraken: brokers/kraken.md
+      - Bitfinex: brokers/bitfinex.md
+      - Bybit, OKX, Gate, HTX, KuCoin, MEXC: brokers/conectores-spot.md
   - Integración:
       - Guía de migración: integracion/migracion.md
+      - luarix-arbitrage-web-server: integracion/arbitraje.md
   - Referencia:
       - Contrato Broker: referencia/broker.md
       - Capacidades: referencia/capacidades.md

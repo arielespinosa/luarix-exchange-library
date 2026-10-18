@@ -35,6 +35,8 @@ class Capability(str, Enum):
     CANDLE_STREAM = "candle_stream"
     ORDER_BOOK_STREAM = "order_book_stream"
     ORDER_UPDATE_STREAM = "order_update_stream"
+    ASSET_INFO = "asset_info"
+    ORDER_ROUNDTRIP = "order_roundtrip"
 
 
 # Capacidad -> la ABC que la define. Se rellena solo, al declararse cada ABC.

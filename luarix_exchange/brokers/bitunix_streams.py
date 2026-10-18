@@ -38,7 +38,8 @@ from luarix_exchange.models.book import OrderBook, to_decimal
 from luarix_exchange.models.brokers import Market
 from luarix_exchange.models.orders import OrderInfo, Side
 from luarix_exchange.models.updates import OrderUpdate
-from luarix_exchange.streaming._util import deliver
+from luarix_exchange.streaming._util import deliver, iso_to_ms
+from luarix_exchange.streaming.candles import ClosedCandleEmitter
 from luarix_exchange.streaming.polling import PollingCandleStream, PollingOrderBookStream
 from luarix_exchange.streaming.reconnect import StreamAuthError, run_with_reconnect
 from luarix_exchange.streaming.websocket import websocket_session
@@ -113,23 +114,7 @@ async def _esperar_login(ws: Any, timeout_s: float = 15.0) -> dict:
             return data
 
 
-def _iso_to_ms(valor: Any) -> int | None:
-    """`2024-05-16T08:13:09.123456789Z` -> ms. Python no admite 9 decimales."""
-    if not valor:
-        return None
-    texto = str(valor).replace("Z", "+00:00")
-    if "." in texto:
-        cabeza, resto = texto.split(".", 1)
-        # Solo los dígitos INICIALES son la fracción; lo que sigue es la zona
-        # (`+00:00`). Juntar todos los dígitos perdía la zona y la fecha se
-        # interpretaba en hora local (4 h de error, cazado por un test).
-        fraccion = resto[:len(resto) - len(resto.lstrip("0123456789"))]
-        zona = resto[len(fraccion):]
-        texto = f"{cabeza}.{fraccion[:6]}{zona}"
-    try:
-        return int(datetime.fromisoformat(texto).timestamp() * 1000)
-    except ValueError:
-        return None
+_iso_to_ms = iso_to_ms
 
 
 def order_push_to_update(data: dict, ts_ms: int | None, previo: Decimal | None) -> OrderUpdate:
@@ -179,37 +164,18 @@ class BitunixStreamsMixin(CandleStream, OrderBookStream, OrderUpdateStream):
 
     async def _futures_candles(self, subs: list[CandleSubscription], on_candle: OnCandle, stop: asyncio.Event) -> None:
         por_canal = {(s.symbol, f"market_kline_{KLINE_CHANNELS[s.timeframe][0]}"): s for s in subs}
-        periodo_vigente: dict[CandleSubscription, int] = {}
-        ultima_emitida: dict[CandleSubscription, datetime] = {}
         etiqueta = "bitunix velas futuros"
-
-        async def emitir_cerrada(sub: CandleSubscription, inicio_ms: int) -> None:
-            for intento in range(REST_CANDLE_RETRIES):
-                velas = await asyncio.to_thread(self.get_candles, sub.symbol, sub.timeframe, 3, "futures")
-                previa = ultima_emitida.get(sub)
-                nuevas = [v for v in velas if v.is_closed and (previa is None or v.open_time > previa)
-                          and int(v.open_time.timestamp() * 1000) <= inicio_ms]
-                if previa is None:  # primer cierre visto: solo la vela que acaba de cerrar, sin historia
-                    nuevas = [v for v in nuevas if int(v.open_time.timestamp() * 1000) == inicio_ms]
-                if nuevas:
-                    for vela in nuevas:
-                        await deliver(on_candle, vela)
-                        ultima_emitida[sub] = vela.open_time
-                    return
-                await asyncio.sleep(REST_CANDLE_RETRY_S)
-            log.warning("%s: el WebSocket marcó el cierre de %s %s (inicio %d ms) pero el REST no devolvió esa vela "
-                        "tras %d intentos", etiqueta, sub.symbol, sub.timeframe, inicio_ms, REST_CANDLE_RETRIES)
+        emisor = ClosedCandleEmitter(
+            lambda sub: self.get_candles(sub.symbol, sub.timeframe, 3, "futures"),
+            on_candle,
+            {s: KLINE_CHANNELS[s.timeframe][1] for s in subs},
+            retries=REST_CANDLE_RETRIES, retry_s=REST_CANDLE_RETRY_S, label=etiqueta,
+        )
 
         async def on_message(msg: dict) -> None:
             sub = por_canal.get((msg.get("symbol"), msg.get("ch")))
-            if sub is None or not msg.get("ts"):
-                return
-            duracion = KLINE_CHANNELS[sub.timeframe][1]
-            periodo = int(msg["ts"]) // duracion
-            anterior = periodo_vigente.get(sub)
-            periodo_vigente[sub] = periodo
-            if anterior is not None and periodo > anterior:
-                await emitir_cerrada(sub, anterior * duracion)
+            if sub is not None and msg.get("ts"):
+                await emisor.period_seen(sub, int(msg["ts"]))
 
         suscripcion = {"op": "subscribe", "args": [{"symbol": s, "ch": ch} for s, ch in por_canal]}
 
@@ -217,7 +183,7 @@ class BitunixStreamsMixin(CandleStream, OrderBookStream, OrderUpdateStream):
             await websocket_session(PUBLIC_WS, on_message, stop, subscribe=[suscripcion], keepalive=_ping,
                                     label=etiqueta)
 
-        await run_with_reconnect(sesion, stop, label=etiqueta)
+        await asyncio.gather(run_with_reconnect(sesion, stop, label=etiqueta), emisor.run_boundary_timer(stop))
 
     async def stream_order_books(self, symbols: Sequence[str], depth: int, on_book: OnBook, stop: asyncio.Event,
                                  market: str = "spot") -> None:

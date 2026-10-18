@@ -114,3 +114,18 @@ class Fees(CapabilityInterface):
     @abstractmethod
     def get_commissions(self, symbols: list[str], market: str = "spot") -> dict[str, CommissionRates]:
         """Comisión maker/taker por par."""
+
+
+class OrderRoundtripProbe(CapabilityInterface):
+    """Mide cuánto tarda una orden real en ir y volver, en el entorno de
+    pruebas del exchange (testnet / demo): coloca compras límite lejos del
+    precio y las cancela. Lo usa arbitraje para que su paper trading espere
+    entre operaciones un tiempo real."""
+
+    capability = Capability.ORDER_ROUNDTRIP
+
+    @abstractmethod
+    def measure_order_roundtrip_ms(self, credentials, samples: int = 8) -> list[int]:
+        """Milisegundos de ida y vuelta de `samples` órdenes de prueba.
+        `credentials`: claves del ENTORNO DE PRUEBAS (`api_key`, `api_secret`,
+        `passphrase` si la hay)."""

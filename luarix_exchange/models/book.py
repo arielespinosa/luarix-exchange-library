@@ -36,9 +36,11 @@ def to_decimal(value: Any) -> Decimal:
 class OrderBook:
     """Foto del libro de un par: los mejores niveles de cada lado.
 
-    `received_ms` es la hora LOCAL de recepción: no todos los exchanges
-    mandan marca de tiempo propia. `update_id` es el número de secuencia del
-    exchange cuando lo hay (Binance `lastUpdateId`), `None` si no.
+    `received_ms` es la hora LOCAL de recepción. `event_ms` es la hora DEL
+    EXCHANGE del mensaje, cuando la manda (Kraken, Bitfinex, Bitunix, Binance
+    futuros; no el libro parcial de Binance spot): con ella se mide la latencia
+    (`received_ms + desfase_de_reloj - event_ms`). `update_id` es el número de
+    secuencia del exchange cuando lo hay (Binance `lastUpdateId`), `None` si no.
     """
 
     symbol: str
@@ -48,6 +50,7 @@ class OrderBook:
     update_id: int | None = None
     received_ms: int = field(default_factory=lambda: int(time.time() * 1000))
     raw: Any = field(default=None, repr=False, compare=False)
+    event_ms: int | None = None
 
     @classmethod
     def from_levels(
@@ -61,6 +64,7 @@ class OrderBook:
         update_id: int | None = None,
         received_ms: int | None = None,
         raw: Any = None,
+        event_ms: int | None = None,
     ) -> OrderBook:
         """Construye el libro desde pares (precio, cantidad) en cualquier
         formato numérico, ordenándolo y recortándolo a `depth` niveles por
@@ -80,6 +84,7 @@ class OrderBook:
             update_id=update_id,
             received_ms=received_ms if received_ms is not None else int(time.time() * 1000),
             raw=raw,
+            event_ms=event_ms,
         )
 
     @property

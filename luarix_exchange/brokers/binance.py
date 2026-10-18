@@ -1,6 +1,9 @@
 import decimal
+import hashlib
+import hmac
 import math
 from dataclasses import dataclass, field
+from typing import Any
 from uuid import uuid4
 
 from binance import Client
@@ -8,7 +11,8 @@ from binance.exceptions import BinanceAPIException, BinanceOrderException
 
 import logging
 
-from luarix_exchange.capabilities import ServerClock, SymbolRulesSource
+from luarix_exchange.capabilities import Fees, OrderRoundtripProbe, ServerClock, SymbolRulesSource
+from luarix_exchange.models.fees import CommissionRates
 from luarix_exchange.models.book import OrderBook
 from luarix_exchange.models.brokers import BrokerPosition, Market
 from luarix_exchange.models.rules import SymbolRules
@@ -21,6 +25,42 @@ from luarix_exchange.brokers.base import Broker
 from luarix_exchange.brokers.binance_streams import BinanceStreamsMixin
 from luarix_exchange.brokers.credentials import BrokerCredentials, resolve_credentials
 from luarix_exchange.brokers.market_data.binance import BinanceMarketDataProvider
+
+
+def parse_spot_commission(data: dict) -> CommissionRates:
+    """GET /api/v3/account/commission (igual que en luarix-arbitrage-web-server).
+    El descuento (pagar en BNB) solo cuenta si está activo para la cuenta Y
+    para el par."""
+    std = data["standardCommission"]
+    disc = data.get("discount") or {}
+    descuento = None
+    if disc.get("enabledForAccount") and disc.get("enabledForSymbol") and disc.get("discount") is not None:
+        descuento = decimal.Decimal(str(disc["discount"]))
+    return CommissionRates(symbol=data["symbol"], maker=decimal.Decimal(str(std["maker"])),
+                           taker=decimal.Decimal(str(std["taker"])), discount=descuento)
+
+
+TESTNET_REST_BASE = "https://testnet.binance.vision"
+
+
+def lowest_allowed_bid_multiplier(info: dict) -> decimal.Decimal:
+    """Binance rechaza compras demasiado por debajo del precio (filtro
+    PERCENT_PRICE_BY_SIDE, `bidMultiplierDown`; 0.2 = hasta un 80 % por debajo).
+    0.5 si el par no lo declara. (De luarix-arbitrage-web-server.)"""
+    for f in info.get("filters", []):
+        if f.get("filterType") == "PERCENT_PRICE_BY_SIDE" and f.get("bidMultiplierDown"):
+            return decimal.Decimal(str(f["bidMultiplierDown"]))
+    return decimal.Decimal("0.5")
+
+
+def far_limit_order(price: decimal.Decimal, rules: "SymbolRules", min_multiplier: decimal.Decimal = decimal.Decimal("0.5")):
+    """(precio, cantidad) de una compra límite que NO se ejecuta: lo más lejos del
+    precio que Binance admite (+5 % de margen de redondeo), con la cantidad
+    mínima que supera el notional mínimo. Solo para medir ida y vuelta."""
+    objetivo = price * min_multiplier * decimal.Decimal("1.05")
+    limite = (objetivo / rules.tick_size).to_integral_value(decimal.ROUND_UP) * rules.tick_size
+    qty = ((rules.min_notional * decimal.Decimal("1.2") / limite) / rules.step_size).to_integral_value(decimal.ROUND_UP) * rules.step_size
+    return limite, max(qty, rules.min_qty)
 
 
 def rules_from_binance_symbol(info: dict, market: Market | str) -> SymbolRules:
@@ -62,7 +102,7 @@ class SymbolFilters:
     min_notional: float = 10.0
 
 
-class BinanceBroker(Broker, SymbolRulesSource, ServerClock, BinanceStreamsMixin):
+class BinanceBroker(Broker, SymbolRulesSource, ServerClock, Fees, OrderRoundtripProbe, BinanceStreamsMixin):
     """Broker que conecta el framework con la API de Binance.
 
     Maneja tres modos de operación controlados por las variables de entorno:
@@ -90,10 +130,15 @@ class BinanceBroker(Broker, SymbolRulesSource, ServerClock, BinanceStreamsMixin)
         test_order: bool = True,
         trading_mode: str = "testnet",
         allow_live_trading: bool = False,
+        public_only: bool = False,
     ) -> "BinanceBroker":
         """Lo que usa la factory: resuelve las credenciales (las pasadas o
         las del entorno) y elige las de testnet o producción según `testnet`."""
-        api_key, api_secret = resolve_credentials("BINANCE", credentials).resolve(bool(testnet))
+        if public_only and not credentials and not BrokerCredentials.from_env("BINANCE"):
+            # Solo datos públicos (velas, libros, reglas): no hacen falta claves.
+            api_key, api_secret = "", ""
+        else:
+            api_key, api_secret = resolve_credentials("BINANCE", credentials).resolve(bool(testnet))
         return cls(
             api_key=api_key,
             api_secret=api_secret,
@@ -142,6 +187,62 @@ class BinanceBroker(Broker, SymbolRulesSource, ServerClock, BinanceStreamsMixin)
     def connect(self) -> None:
         """Verifica que la conexión con Binance está activa (ping)."""
         self.client.ping()
+
+    def get_commissions(self, symbols: list[str], market: str = "spot") -> dict[str, CommissionRates]:
+        """Comisión real de la cuenta por par (claves de solo lectura bastan).
+        Spot: /api/v3/account/commission; futuros: /fapi/v1/commissionRate."""
+        tasas = {}
+        for symbol in symbols:
+            if Market(market) is Market.FUTURES:
+                d = self._client().futures_commission_rate(symbol=symbol)
+                tasas[symbol] = CommissionRates(symbol=symbol, maker=decimal.Decimal(str(d["makerCommissionRate"])),
+                                                taker=decimal.Decimal(str(d["takerCommissionRate"])))
+            else:
+                tasas[symbol] = parse_spot_commission(self._client().v3_get_account_commission(symbol=symbol))
+        return tasas
+
+    def measure_order_roundtrip_ms(self, credentials: Any, samples: int = 8, symbol: str = "BTCUSDT") -> list[int]:
+        """En la TESTNET de spot: coloca `samples` compras límite lejos del precio
+        y las cancela, midiendo cada ida y vuelta (REST directo, sin python-binance,
+        para no medir su sobrecarga). `credentials`: claves de TESTNET.
+
+        Firma con la hora de Binance (`/api/v3/time`): con la local, un reloj
+        adelantado >1 s hace fallar todo con -1021 (le pasaría al original de
+        luarix-arbitrage-web-server en una máquina así)."""
+        import time as _time
+
+        import requests
+
+        http, base = requests.Session(), TESTNET_REST_BASE
+        cabeceras = {"X-MBX-APIKEY": credentials.api_key}
+        info = http.get(f"{base}/api/v3/exchangeInfo", params={"symbol": symbol}, timeout=15).json()["symbols"][0]
+        reglas = rules_from_binance_symbol(info, Market.SPOT)
+        precio = decimal.Decimal(http.get(f"{base}/api/v3/ticker/price", params={"symbol": symbol}, timeout=15).json()["price"])
+        limite, qty = far_limit_order(precio, reglas, lowest_allowed_bid_multiplier(info))
+        antes = _time.time() * 1000
+        servidor = http.get(f"{base}/api/v3/time", timeout=15).json()["serverTime"]
+        desfase = int(servidor - (antes + _time.time() * 1000) / 2)
+
+        def firmada(metodo: str, ruta: str, consulta: str) -> dict:
+            consulta = f"{consulta}&recvWindow=5000&timestamp={int(_time.time() * 1000) + desfase}"
+            firma = hmac.new(credentials.api_secret.encode(), consulta.encode(), hashlib.sha256).hexdigest()
+            resp = http.request(metodo, f"{base}{ruta}?{consulta}&signature={firma}", headers=cabeceras, timeout=15)
+            data = resp.json()
+            if resp.status_code != 200:
+                raise RuntimeError(f"Binance testnet {resp.status_code}: {data.get('msg', data)}")
+            return data
+
+        http.get(f"{base}/api/v3/ping", timeout=15)  # abre la conexión: la 1ª medida no paga el TLS
+        tiempos: list[int] = []
+        for _ in range(samples):
+            orden = f"symbol={symbol}&side=BUY&type=LIMIT&timeInForce=GTC&quantity={qty}&price={limite}&newOrderRespType=ACK"
+            inicio = _time.time()
+            colocada = firmada("POST", "/api/v3/order", orden)
+            tiempos.append(int((_time.time() - inicio) * 1000))
+            firmada("DELETE", "/api/v3/order", f"symbol={symbol}&orderId={colocada['orderId']}")
+            _time.sleep(0.2)
+        logging.getLogger(__name__).info("Binance testnet: %d órdenes de prueba, ida y vuelta %s ms", samples, tiempos)
+        return tiempos
 
     def server_time_ms(self) -> int:
         return int(self._client().get_server_time()["serverTime"])

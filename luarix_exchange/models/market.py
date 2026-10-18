@@ -9,8 +9,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime, timezone
+from typing import TYPE_CHECKING
 
-import pandas as pd
+if TYPE_CHECKING:  # pandas solo hace falta en `from_dataframe_row`
+    import pandas as pd
 
 
 @dataclass(frozen=True)
@@ -65,6 +67,8 @@ class Candle:
 
     @classmethod
     def from_dataframe_row(cls, symbol:str, timeframe:str, row: pd.Series) -> Candle:
+        import pandas as pd
+
         return cls(
             symbol=symbol,
             timeframe=timeframe,

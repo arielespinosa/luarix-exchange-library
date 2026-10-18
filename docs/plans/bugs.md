@@ -1083,3 +1083,79 @@ hora local (UTC-4). Lo cazó el test con el valor calculado aparte.
   tenía restricción geográfica en futuros.
 - URLs de testnet de futuros de Binance.
 - Canal `order` de Bitunix con una cuenta real (sí el login y su rechazo).
+
+---
+
+## [2026-10-18] Fase 6 — Kraken y Bitfinex (y lado librería de la Fase 7)
+
+Portados de luarix-arbitrage-web-server con su lógica INTACTA (traducción de
+activos, reglas, libro con checksum CRC-32, firma, comisiones, reloj por
+WebSocket) y sus tests con mensajes reales. Añadido para Luarix: velas REST y
+por WebSocket, precio, libro REST, pares, activos.
+
+- **Arbitraje ya tiene 9 conectores** (2026-10: Bybit, Gate, HTX, KuCoin, MEXC,
+  OKX además de Binance, Kraken, Bitfinex) y su contrato creció con
+  `fetch_assets` / `AssetListing` / `AssetNetworkInfo`. Lo que se mire de su
+  repo hay que releerlo: cambia rápido.
+- **Bitfinex, velas**: columnas `[MTS, OPEN, CLOSE, HIGH, LOW, VOLUME]` -- el
+  cierre va ANTES que el máximo. Test que comprueba `low <= open/close <= high`
+  con datos reales.
+- **Kraken, velas REST**: la última fila es la vela en curso; cerradas = las de
+  `time <= result["last"]`. Solo sirve las 720 más recientes por intervalo:
+  `get_historical_candles` levanta si `start` es anterior (no rango incompleto).
+- **Kraken/Bitfinex, WebSocket de velas**: mandan la vela en curso sin marca de
+  cierre. `streaming/candles.py::ClosedCandleEmitter`: WebSocket como disparador
+  + REST para la vela exacta + temporizador en cada frontera (en un par sin
+  operaciones el "periodo nuevo" solo llegaría con el siguiente trade). Bitunix
+  pasó a usarlo también (antes no tenía temporizador).
+- **Checksums**: necesitan los números como TEXTO exacto. `websocket_session`
+  acepta `loads=` (Kraken `parse_float=str`; Bitfinex además `parse_int=str`).
+- **Reloj de Kraken/Bitfinex**: devolvían 0 si en la ventana no llegaba ninguna
+  marca (pasa con Bitfinex tras muchas conexiones seguidas: límite por minuto).
+  Un 0 falsea TODAS las latencias (salía 4,4 s en vez de ~150 ms). Ahora se
+  conserva el último desfase medido, con aviso. Arbitraje tiene ese mismo
+  comportamiento (devuelve 0): conviene corregirlo allí también.
+- **Binance para arbitraje**: `public_only=True` en `create()` (datos públicos
+  sin claves). Latencia de spot por `miniTicker` en la misma conexión (el libro
+  parcial no trae hora), como hace arbitraje; futuros por `E` del libro
+  (`OrderBook.event_ms`). `FEES` con `/api/v3/account/commission` (descuento BNB
+  solo si activo en cuenta Y par) y `/fapi/v1/commissionRate`.
+- **`aio.AsyncExchange`**: la forma exacta del contrato async de arbitraje sobre
+  cualquier exchange de la librería. Probado con el motor real de arbitraje
+  (`scripts/probar_adaptador_arbitraje.py`): ciclos triangulares en Kraken,
+  Bitfinex y Binance, latencias medianas 109-134 ms.
+- **`pandas` perezoso en `Candle`**: importar capacidades, Kraken, Bitfinex o
+  `aio` ya no carga pandas (sigue siendo dependencia por el `PaperBroker`).
+- **Test intermitente** (1 vez de ~10): casi seguro
+  `test_credentials_and_factory.py::test_binance_si_respeta_testnet`, que construye un
+  `BinanceBroker` real (ping + hora del servidor por red).
+
+---
+
+## [2026-10-18] Los 6 conectores restantes de arbitraje (Bybit, OKX, Gate, HTX, KuCoin, MEXC)
+
+Portados de luarix-arbitrage-web-server con su lógica INTACTA a
+`luarix_exchange/exchanges/` sobre una base común (`_base.py::SpotConnector`:
+reglas cacheadas, reloj, libro por WebSocket con `run_with_reconnect`,
+comisiones, activos). Sus tests (`test_new_exchanges.py` de arbitraje) están en
+`tests/test_spot_connectors.py`.
+
+- **Binance `measure_order_roundtrip_ms`**: arbitraje firma con la hora LOCAL;
+  en esta máquina (reloj ~4,3 s adelantado) eso da -1021. La librería firma con
+  la hora de Binance (`sync_clock`). Verificado en testnet: ~210 ms.
+- **HTX, reloj**: su `/v1/common/timestamp` por REST da una estimación ~200 ms
+  peor que la del resto → latencias de ~320 ms en vez de ~100-170. Es el mismo
+  método que usa arbitraje (mismo problema allí). Mejora: estimarlo con las
+  marcas `ts` del WebSocket, como Kraken/Bitfinex.
+- **HTX, WebSocket**: mensajes gzip; el `ping` lo manda el SERVIDOR y hay que
+  responder `pong` con el mismo número — se usa el `ws` capturado en `on_open`.
+- **OKX, keepalive**: `"ping"`/`"pong"` en TEXTO plano, no JSON
+  (`websocket_session` acepta `keepalive` que devuelva `str`).
+- **MEXC**: WebSocket solo protobuf (lector mínimo `_common.protobuf_fields`,
+  sin depender de `protobuf`); 30 suscripciones por conexión → varias
+  conexiones; si cae una, se reabren todas.
+- **KuCoin**: hay que pedir un token (`bullet-public`) antes de cada conexión.
+- **Credenciales con passphrase**: OKX y KuCoin (`*_API_PASSPHRASE`); entornos
+  de pruebas `BYBIT_TESTNET_*` y `OKX_DEMO_*`.
+- **Sin verificar** (necesitan claves): comisiones de los seis y órdenes de
+  prueba de Bybit testnet / OKX demo.

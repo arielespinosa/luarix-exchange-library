@@ -28,7 +28,15 @@ from luarix_exchange.models.brokers import Market
 
 _REGISTRY: dict[str, str] = {
     "binance": "luarix_exchange.brokers.binance:BinanceBroker",
+    "bitfinex": "luarix_exchange.exchanges.bitfinex:BitfinexExchange",
     "bitunix": "luarix_exchange.brokers.bitunix:BitunixBroker",
+    "bybit": "luarix_exchange.exchanges.bybit:BybitExchange",
+    "gate": "luarix_exchange.exchanges.gate:GateExchange",
+    "htx": "luarix_exchange.exchanges.htx:HtxExchange",
+    "kraken": "luarix_exchange.exchanges.kraken:KrakenExchange",
+    "kucoin": "luarix_exchange.exchanges.kucoin:KucoinExchange",
+    "mexc": "luarix_exchange.exchanges.mexc:MexcExchange",
+    "okx": "luarix_exchange.exchanges.okx:OkxExchange",
     "mt5": "luarix_exchange.brokers.mt5:MT5Broker",
     "paper": "luarix_exchange.brokers.paper:PaperBroker",
 }

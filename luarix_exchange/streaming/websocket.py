@@ -50,6 +50,7 @@ async def websocket_session(
     on_open: OnOpen | None = None,
     keepalive: Callable[[], Any] | None = None,
     keepalive_s: float = 20.0,
+    loads: Callable[[str], Any] = json.loads,
     heartbeat: float | None = 30.0,
     http_session: Any = None,
     max_msg_size: int = 4 * 1024 * 1024,
@@ -65,6 +66,9 @@ async def websocket_session(
     - `keepalive()`: devuelve el mensaje de ping de APLICACIÓN que algunos
       exchanges exigen (Bitunix: `{"op": "ping", ...}`); se manda cada
       `keepalive_s`. Distinto de `heartbeat`, que son pings de protocolo.
+    - `loads`: decodificador. Kraken y Bitfinex necesitan los números como
+      TEXTO exacto (`parse_float=str`): sus checksums se calculan sobre esa
+      representación y un `float` los rompería.
     """
     aiohttp = _aiohttp()
     propia = http_session is None
@@ -89,7 +93,7 @@ async def websocket_session(
                         return
                     msg = recibir.result()
                     if msg.type in (aiohttp.WSMsgType.TEXT, aiohttp.WSMsgType.BINARY):
-                        await deliver(on_message, json.loads(msg.data))
+                        await deliver(on_message, loads(msg.data))
                     elif msg.type == aiohttp.WSMsgType.ERROR:
                         raise ConnectionError(f"{label}: error en el socket: {ws.exception()!r}")
                     elif msg.type in (aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.CLOSING, aiohttp.WSMsgType.CLOSED):
@@ -109,4 +113,8 @@ async def _keepalive(ws: Any, mensaje: Callable[[], Any], cada_s: float) -> None
         await asyncio.sleep(cada_s)
         if ws.closed:
             return
-        await ws.send_json(mensaje())
+        contenido = mensaje()
+        if isinstance(contenido, str):  # OKX: "ping" en texto plano
+            await ws.send_str(contenido)
+        else:
+            await ws.send_json(contenido)

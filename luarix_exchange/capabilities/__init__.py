@@ -5,18 +5,25 @@ Importar este paquete registra TODAS las capacidades, que es lo que necesita
 """
 
 from luarix_exchange.capabilities.base import CAPABILITY_ABCS, Capability, CapabilityInterface, Exchange
-from luarix_exchange.capabilities.market_data import MarketData, ServerClock, SymbolRulesSource
+from luarix_exchange.capabilities.market_data import (
+    AssetInfo,
+    MarketData,
+    ServerClock,
+    SymbolRulesSource,
+    assets_from_rules,
+)
 from luarix_exchange.capabilities.streams import (
     CandleStream,
     CandleSubscription,
     OrderBookStream,
     OrderUpdateStream,
 )
-from luarix_exchange.capabilities.trading import Account, Derivatives, Fees, NativeOco, Trading
+from luarix_exchange.capabilities.trading import Account, Derivatives, Fees, NativeOco, OrderRoundtripProbe, Trading
 
 __all__ = [
     "CAPABILITY_ABCS",
     "Account",
+    "AssetInfo",
     "CandleStream",
     "CandleSubscription",
     "Capability",
@@ -27,8 +34,10 @@ __all__ = [
     "MarketData",
     "NativeOco",
     "OrderBookStream",
+    "OrderRoundtripProbe",
     "OrderUpdateStream",
     "ServerClock",
     "SymbolRulesSource",
     "Trading",
+    "assets_from_rules",
 ]

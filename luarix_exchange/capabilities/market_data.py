@@ -8,6 +8,7 @@ from abc import abstractmethod
 from datetime import datetime
 
 from luarix_exchange.capabilities.base import Capability, CapabilityInterface
+from luarix_exchange.models.assets import AssetListing
 from luarix_exchange.models.book import OrderBook
 from luarix_exchange.models.market import Candle
 from luarix_exchange.models.rules import SymbolRules
@@ -89,3 +90,21 @@ class ServerClock(CapabilityInterface):
         servidor = self.server_time_ms()
         despues = time.time() * 1000
         return int(servidor - (antes + despues) / 2)
+
+
+class AssetInfo(CapabilityInterface):
+    """Los activos del exchange: nombre común, nombre en su API, si se puede
+    depositar/retirar y por qué redes (lo que el exchange publique sin claves)."""
+
+    capability = Capability.ASSET_INFO
+
+    @abstractmethod
+    def list_assets(self) -> dict[str, AssetListing]:
+        """Activos por nombre COMÚN."""
+
+
+def assets_from_rules(rules: dict[str, SymbolRules]) -> dict[str, AssetListing]:
+    """Activos deducidos de los pares (estado de depósitos/retiradas
+    desconocido), para un exchange que no publica más."""
+    nombres = {r.base for r in rules.values()} | {r.quote for r in rules.values()}
+    return {n: AssetListing(n, n) for n in sorted(nombres)}

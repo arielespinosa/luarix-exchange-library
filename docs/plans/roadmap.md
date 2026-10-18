@@ -239,6 +239,12 @@ la documentación actual y una conexión real.
 
 ## Fase 6 — Kraken y Bitfinex completos
 
+**Implementada el 2026-10-18** en `main` (sin commitear): `luarix_exchange/exchanges/kraken.py`
+y `bitfinex.py`, con MARKET_DATA, SYMBOL_RULES, SERVER_CLOCK, FEES, ASSET_INFO,
+ORDER_BOOK_STREAM (checksum) y CANDLE_STREAM, verificado en vivo (sin claves).
+Pendiente: cuenta/órdenes/streams privados (necesitan claves) y las comisiones
+con claves reales. Además: `FEES` en Binance, capacidad nueva `ASSET_INFO`.
+
 Punto de partida: `engine/exchanges/kraken.py` y `bitfinex.py` de arbitraje
 (reglas de pares, libros por WS, comisiones). Se mueven aquí y se completan.
 
@@ -258,6 +264,20 @@ Bitunix.
 
 ## Fase 7 — luarix-arbitrage-web-server usa la librería
 
+**Lado librería LISTO (2026-10-18)**: `luarix_exchange.aio.AsyncExchange` da la
+forma exacta del contrato async de arbitraje; adaptador de referencia y plan en
+`docs/integracion/arbitraje.md`; probado con su motor real
+(`scripts/probar_adaptador_arbitraje.py`). Pendiente en arbitraje: copiar el
+adaptador y migrar un exchange cada vez.
+
+**Los 9 conectores de arbitraje en la librería (2026-10-18)**: Bybit, OKX,
+Gate, HTX, KuCoin y MEXC portados con su lógica intacta
+(`luarix_exchange/exchanges/`, base común `SpotConnector`), más
+`OrderRoundtripProbe` (Binance testnet, Bybit testnet, OKX demo). El motor de
+arbitraje evaluó ciclos con libros de la librería en los 9. Pendiente en la
+librería para esos seis: velas/precio/libro REST (`MARKET_DATA`, para usarlos
+desde Luarix), cuenta y órdenes (con claves), y reloj de HTX por WebSocket.
+
 - Sustituir `engine/exchanges/*` por la librería. Primero con un adaptador
   fino que implemente su `Exchange` actual sobre las capacidades nuevas (cero
   cambios en `engine/`), y después quitar el adaptador.
@@ -266,8 +286,9 @@ Bitunix.
 
 ## Fase 8 — Más exchanges (por decidir)
 
-Candidatos por volumen: OKX, Bybit, KuCoin (estuvo en el enum de la factory
-sin implementación; se quitó). Decidir con el usuario cuáles y en qué orden.
+Candidatos por volumen: OKX, Bybit, KuCoin — ya están para arbitraje
+(libros, reglas, reloj, comisiones) desde el 2026-10-18; falta completarlos para
+Luarix (velas y órdenes). Decidir con el usuario cuáles y en qué orden.
 Con las Fases 3 y 4 hechas, añadir uno es implementar las capacidades que
 soporte; los streams por polling salen solos.
 

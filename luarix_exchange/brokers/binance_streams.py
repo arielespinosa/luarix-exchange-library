@@ -74,6 +74,7 @@ def depth_to_book(data: dict, symbol: str, market: str, depth: int) -> OrderBook
         depth=depth,
         update_id=data.get("lastUpdateId", data.get("u")),
         raw=data,
+        event_ms=int(data["E"]) if data.get("E") else None,  # futuros sí trae la hora de Binance
     )
 
 
@@ -167,7 +168,13 @@ class BinanceStreamsMixin(CandleStream, OrderBookStream, OrderUpdateStream):
         await asyncio.gather(*(un_mercado(m, s) for m, s in por_mercado.items()))
 
     async def stream_order_books(self, symbols: Sequence[str], depth: int, on_book: OnBook, stop: asyncio.Event,
-                                 market: str = "spot") -> None:
+                                 market: str = "spot", *, latency_symbol: str | None = None,
+                                 on_event_time: Any = None) -> None:
+        """`latency_symbol` + `on_event_time`: entrega la hora de Binance (ms) para
+        medir latencia. El libro parcial de SPOT no la trae, así que se añade el
+        `miniTicker` de ese par (~200 bytes/s) a la MISMA conexión, como hace
+        luarix-arbitrage-web-server: comparte el retraso de los libros. En
+        futuros sale del propio libro (`E`, también en `OrderBook.event_ms`)."""
         if depth > DEPTH_LEVELS[-1]:
             log.info("binance: libro de %d niveles > %d del stream parcial; va por polling", depth, DEPTH_LEVELS[-1])
             await PollingOrderBookStream(self).stream_order_books(symbols, depth, on_book, stop, market)
@@ -176,13 +183,26 @@ class BinanceStreamsMixin(CandleStream, OrderBookStream, OrderUpdateStream):
         mercado = Market(market)
         base = (FUT_PUBLIC if mercado is Market.FUTURES else SPOT_STREAM)[self._net()]
         por_nombre = {s.lower(): s for s in symbols}
-        streams = "/".join(f"{s.lower()}@depth{nivel}@100ms" for s in symbols)
+        nombres = [f"{s.lower()}@depth{nivel}@100ms" for s in symbols]
+        latencia = None
+        if latency_symbol and on_event_time is not None and mercado is Market.SPOT:
+            latencia = f"{latency_symbol.lower()}@miniTicker"
+            nombres.append(latencia)
+        streams = "/".join(nombres)
 
         async def on_message(msg: dict) -> None:
-            simbolo = por_nombre.get(str(msg.get("stream", "")).split("@")[0])
+            nombre = str(msg.get("stream", ""))
+            if nombre == latencia:
+                if msg.get("data", {}).get("E"):
+                    on_event_time(int(msg["data"]["E"]))
+                return
+            simbolo = por_nombre.get(nombre.split("@")[0])
             if simbolo is None:
                 return
-            await deliver(on_book, depth_to_book(msg["data"], simbolo, mercado.value, depth))
+            libro = depth_to_book(msg["data"], simbolo, mercado.value, depth)
+            if on_event_time is not None and simbolo == latency_symbol and libro.event_ms:
+                on_event_time(libro.event_ms)
+            await deliver(on_book, libro)
 
         async def sesion() -> None:
             await websocket_session(f"{base}?streams={streams}", on_message, stop,

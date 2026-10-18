@@ -71,13 +71,17 @@ class BitunixBroker(Broker, SymbolRulesSource, BitunixStreamsMixin):
         test_order: bool | None = None,
         trading_mode: str = "testnet",
         allow_live_trading: bool = False,
+        public_only: bool = False,
     ) -> "BitunixBroker":
         """Lo que usa la factory. `testnet` y `test_order` se aceptan y se
         IGNORAN: Bitunix no tiene testnet. Por eso las credenciales se
         resuelven con `resolve(False)`: pedirle las de prueba devolvía
         `("", "")` y la primera llamada fallaba con un `10003 API key
         inexistente` que no dice nada de la causa real."""
-        api_key, api_secret = resolve_credentials("BITUNIX", credentials).resolve(False)
+        if public_only and not credentials and not BrokerCredentials.from_env("BITUNIX"):
+            api_key, api_secret = "", ""  # solo datos públicos
+        else:
+            api_key, api_secret = resolve_credentials("BITUNIX", credentials).resolve(False)
         return cls(
             api_key=api_key,
             api_secret=api_secret,
