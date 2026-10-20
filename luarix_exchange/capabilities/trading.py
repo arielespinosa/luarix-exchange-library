@@ -5,7 +5,10 @@ from __future__ import annotations
 
 from abc import abstractmethod
 
+from datetime import datetime
+
 from luarix_exchange.capabilities.base import Capability, CapabilityInterface
+from luarix_exchange.models.account import AccountSummary, FundingMovement, IncomeEntry
 from luarix_exchange.models.brokers import BrokerPosition
 from luarix_exchange.models.fees import CommissionRates
 from luarix_exchange.models.orders import Entry, Fill, OrderAck, OrderInfo, OrderRequest, OrderStatus, Side
@@ -36,6 +39,49 @@ class Account(CapabilityInterface):
 
     def get_order_status(self, symbol: str, order_id: str, market: str = "spot") -> OrderStatus:
         return self.get_order(symbol, order_id, market).status
+
+
+class AccountSummarySource(CapabilityInterface):
+    """El saldo COMPLETO de la cuenta, valorado en USDT: spot + futuros, libre
+    + bloqueado, cada activo con su equivalencia y los totales.
+
+    No sustituye a `Account.get_balance`, que sigue siendo el saldo
+    DISPONIBLE en la unidad de cada activo (la pregunta de un grafo antes de
+    entrar). Este responde otra: "¿cuánto vale mi cuenta?"."""
+
+    capability = Capability.ACCOUNT_SUMMARY
+
+    @abstractmethod
+    def get_account_summary(self, markets: list[str] | None = None) -> AccountSummary:
+        """`markets=None` = todos los de `Exchange.markets`. Un mercado que
+        falla queda en `AccountSummary.errors`; si fallan todos, levanta."""
+
+
+class FundingHistory(CapabilityInterface):
+    """Depósitos y retiros de la cuenta."""
+
+    capability = Capability.FUNDING_HISTORY
+
+    @abstractmethod
+    def get_deposits(self, start: datetime, end: datetime) -> list[FundingMovement]:
+        """Depósitos en `[start, end]`, más antiguos primero. Las ventanas
+        máximas por petición del exchange se resuelven dentro."""
+
+    @abstractmethod
+    def get_withdrawals(self, start: datetime, end: datetime) -> list[FundingMovement]:
+        """Retiros en `[start, end]`, más antiguos primero."""
+
+
+class IncomeHistory(CapabilityInterface):
+    """El libro de la cuenta de futuros: PnL realizado, funding, comisiones y
+    transferencias, apunte a apunte. Incluye lo que el usuario operó a mano,
+    no solo lo de Luarix."""
+
+    capability = Capability.INCOME_HISTORY
+
+    @abstractmethod
+    def get_income(self, start: datetime, end: datetime) -> list[IncomeEntry]:
+        """Apuntes en `[start, end]`, más antiguos primero."""
 
 
 class Trading(CapabilityInterface):

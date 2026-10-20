@@ -9,7 +9,7 @@ from luarix_exchange.brokers.bitunix_streams import BitunixStreamsMixin
 from luarix_exchange.brokers.bitunix_response import BitunixApiError, unwrap
 from luarix_exchange.brokers.credentials import BrokerCredentials, resolve_credentials
 from luarix_exchange.brokers.market_data.bitunix import BitunixMarketDataProvider
-from luarix_exchange.capabilities import Capability, SymbolRulesSource
+from luarix_exchange.capabilities import AccountSummarySource, Capability, SymbolRulesSource
 from luarix_exchange.models.book import OrderBook
 from luarix_exchange.models.brokers import BrokerPosition, Market
 from luarix_exchange.models.rules import SymbolRules
@@ -21,7 +21,7 @@ from luarix_exchange.models.orders import Side
 logger = logging.getLogger(__name__)
 
 
-class BitunixBroker(Broker, SymbolRulesSource, BitunixStreamsMixin):
+class BitunixBroker(Broker, SymbolRulesSource, AccountSummarySource, BitunixStreamsMixin):
     """Bitunix: spot y futuros perpetuos USDT-M.
 
     Dos APIs distintas en dos hosts distintos. El paquete `bitunix` de PyPI

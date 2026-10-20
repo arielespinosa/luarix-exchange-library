@@ -3,6 +3,7 @@ from bitunix import BitunixClient
 from luarix_exchange.brokers.account_data.base import AccountDataProvider
 from luarix_exchange.brokers.bitunix_futures import DEFAULT_MARGIN_COIN, BitunixFuturesClient
 from luarix_exchange.brokers.bitunix_response import BitunixApiError, unwrap
+from luarix_exchange.models.account import QUOTE_ASSET, BalanceRow
 
 
 class BitunixAccountDataProvider(AccountDataProvider):
@@ -179,6 +180,51 @@ class BitunixAccountDataProvider(AccountDataProvider):
         if market != "futures":
             raise NotImplementedError("El apalancamiento solo existe en la cuenta de futuros.")
         return self.futures.set_leverage(symbol, leverage)
+
+
+    # ── Portafolio ──────────────────────────────────────────────────────
+
+    def get_balance_rows(self, market: str = "spot") -> list[BalanceRow]:
+        if market == "futures":
+            # Una consulta por moneda de margen; Luarix solo opera USDT-M.
+            # `available` es lo libre; `frozen` lo reservado por órdenes y
+            # `margin` lo inmovilizado en posiciones: el saldo total es la
+            # suma de los tres. El no realizado viene partido en cruzado y
+            # aislado. (Lectura de la documentación de la API, sin verificar
+            # aún contra una cuenta real con posiciones -- ver docs/estado.md.)
+            data = self.futures.account(DEFAULT_MARGIN_COIN)
+            if not isinstance(data, dict):
+                raise BitunixApiError(f"Bitunix devolvió una cuenta de futuros con forma inesperada: {data!r}")
+            free = float(data.get("available") or 0)
+            locked = float(data.get("frozen") or 0) + float(data.get("margin") or 0)
+            unrealized = float(data.get("crossUnrealizedPNL") or 0) + float(data.get("isolationUnrealizedPNL") or 0)
+            if free + locked == 0 and unrealized == 0:
+                return []
+            coin = str(data.get("marginCoin") or DEFAULT_MARGIN_COIN)
+            return [BalanceRow(coin, free, locked, unrealized, raw=data)]
+
+        # `/api/spot/v1/user/account`: `balance` es lo libre y `balanceLocked`
+        # lo reservado en órdenes (ver `_spot_balance`).
+        data = unwrap(self.client.get_account_balance(), "la consulta de balance spot", on_null=[])
+        filas = []
+        for item in data:
+            if "coin" not in item:
+                continue
+            free, locked = float(item.get("balance") or 0), float(item.get("balanceLocked") or 0)
+            if free + locked > 0:
+                filas.append(BalanceRow(str(item["coin"]), free, locked, raw=item))
+        return filas
+
+    def get_usdt_prices(self) -> dict[str, float]:
+        # `/api/spot/v1/common/rate/list` (público): ~1000 pares
+        # `{"baseSymbol", "quoteSymbol", "rate"}` contra USDT y monedas fiat,
+        # en UNA llamada. Se quedan los que cotizan en USDT.
+        data = unwrap(self.client.get_rate_data(), "la consulta de precios en USDT")
+        return {
+            str(item["baseSymbol"]): float(item["rate"])
+            for item in data
+            if item.get("quoteSymbol") == QUOTE_ASSET and float(item.get("rate") or 0) > 0
+        }
 
 
 # Monedas de cotización: tenerlas no es una posición abierta, es el efectivo

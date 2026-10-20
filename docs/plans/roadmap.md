@@ -292,6 +292,17 @@ Luarix (velas y órdenes). Decidir con el usuario cuáles y en qué orden.
 Con las Fases 3 y 4 hechas, añadir uno es implementar las capacidades que
 soporte; los streams por polling salen solos.
 
+## Fase 9 — Historial de cuenta para el portafolio (en curso desde 2026-10-19)
+
+El portafolio por broker de Luarix (`/portfolio`) necesita equity total,
+depósitos, retiros, fills e income por cuenta; hoy solo hay estado actual.
+Plan y pasos en [`historial-de-cuenta.md`](historial-de-cuenta.md).
+
+- [x] `ACCOUNT_SUMMARY` (Binance, Bitunix) ✅ 2026-10-19
+- [x] `FUNDING_HISTORY` e `INCOME_HISTORY` (Binance) ✅ 2026-10-19
+- [ ] Verificar los cuatro contra cuentas reales (ver `docs/estado.md`)
+- [ ] Bitunix: depósitos/retiros e historial de futuros, si la API los tiene
+
 ---
 
 ## Reglas para todo el roadmap

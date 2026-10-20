@@ -18,11 +18,22 @@ from luarix_exchange.capabilities.streams import (
     OrderBookStream,
     OrderUpdateStream,
 )
-from luarix_exchange.capabilities.trading import Account, Derivatives, Fees, NativeOco, OrderRoundtripProbe, Trading
+from luarix_exchange.capabilities.trading import (
+    Account,
+    AccountSummarySource,
+    Derivatives,
+    Fees,
+    FundingHistory,
+    IncomeHistory,
+    NativeOco,
+    OrderRoundtripProbe,
+    Trading,
+)
 
 __all__ = [
     "CAPABILITY_ABCS",
     "Account",
+    "AccountSummarySource",
     "AssetInfo",
     "CandleStream",
     "CandleSubscription",
@@ -31,6 +42,8 @@ __all__ = [
     "Derivatives",
     "Exchange",
     "Fees",
+    "FundingHistory",
+    "IncomeHistory",
     "MarketData",
     "NativeOco",
     "OrderBookStream",

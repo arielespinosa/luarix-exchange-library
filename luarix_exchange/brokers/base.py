@@ -16,6 +16,7 @@ from luarix_exchange.capabilities import (
     NativeOco,
     Trading,
 )
+from luarix_exchange.models.account import AccountSummary, build_account_summary
 from luarix_exchange.models.book import OrderBook
 from luarix_exchange.models.brokers import BrokerPosition, Market
 from luarix_exchange.models.market import Candle
@@ -233,6 +234,18 @@ class Broker(Exchange, MarketData, Account, Trading, Derivatives, NativeOco):
             dict[str, float]: activo -> saldo disponible.
         """
         pass
+
+    def get_account_summary(self, markets: list[str] | None = None) -> AccountSummary:
+        """El saldo COMPLETO valorado en USDT: spot + futuros, libre +
+        bloqueado, cada activo con su equivalencia (ver `models/account.py`).
+
+        Concreto aquí y no en cada broker: lo único propio de cada exchange
+        son `get_balance_rows` y `get_usdt_prices` de su proveedor de cuenta.
+        Un broker sin proveedor (PaperBroker, MT5) levanta, y solo los que
+        heredan `AccountSummarySource` lo DECLARAN como capacidad."""
+        provider = self._account_data()
+        wanted = [Market(m) for m in markets] if markets else sorted(self.markets, key=lambda m: m.value)
+        return build_account_summary(wanted, lambda m: provider.get_balance_rows(m.value), provider.get_usdt_prices)
 
     # ── Órdenes vivas en el exchange ────────────────────────────────────
     # Concretos (no abstractos) y delegando en `account_data_provider`: así

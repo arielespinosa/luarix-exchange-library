@@ -42,6 +42,9 @@ broker.require(Capability.NATIVE_OCO)    # NotImplementedError: Bitunix no sopor
 | `CANDLE_STREAM` | `CandleStream` | `async stream_candles(...)` |
 | `ORDER_BOOK_STREAM` | `OrderBookStream` | `async stream_order_books(...)` |
 | `ORDER_UPDATE_STREAM` | `OrderUpdateStream` | `async stream_order_updates(...)` |
+| `ACCOUNT_SUMMARY` | `AccountSummarySource` | `get_account_summary(markets=None)` → `AccountSummary`: spot + futuros, libre + bloqueado, cada activo con su valor en USDT y los totales |
+| `FUNDING_HISTORY` | `FundingHistory` | `get_deposits(start, end)`, `get_withdrawals(start, end)` → `list[FundingMovement]` |
+| `INCOME_HISTORY` | `IncomeHistory` | `get_income(start, end)` → `list[IncomeEntry]` (PnL realizado, funding, comisiones de futuros) |
 
 REST **síncrono**; streams **asíncronos** (decisión híbrida, 2026-10-16).
 Cualquier exchange con `MARKET_DATA`/`ACCOUNT` tiene streams por polling
@@ -100,3 +103,24 @@ class Exchange:
 declara `unsupported = {NATIVE_OCO}`, y Paper y MT5
 `{MARKET_DATA, DERIVATIVES}`. Un método no soportado sigue **levantando**
 cuando se llama: `supports()` sirve para decidir antes, no para sustituir eso.
+
+## Saldo, depósitos e income (Fase 9, 2026-10-19)
+
+Para el portafolio de Luarix. Ver `docs/plans/historial-de-cuenta.md`.
+
+| | `ACCOUNT_SUMMARY` | `FUNDING_HISTORY` | `INCOME_HISTORY` |
+|---|---|---|---|
+| Binance | ✅ spot (`get_account`) + futuros (`futures_account`), precios con `get_all_tickers` | ✅ (no en testnet: `/sapi` no existe ahí) | ✅ futuros, `futures_income_history` |
+| Bitunix | ✅ spot (`/user/account`) + futuros (`account()`), precios con `/common/rate/list` | ❌ sin endpoint conocido | ❌ |
+| MT5, Paper, resto | ❌ | ❌ | ❌ |
+
+```python
+resumen = broker.get_account_summary()       # spot + futuros
+resumen.equity_usdt, resumen.available_usdt  # totales en USDT
+for activo in resumen.assets:                # AssetBalance
+    activo.asset, activo.market, activo.free, activo.locked, activo.usdt_value
+resumen.errors                               # {"futures": "..."} si un mercado falló
+```
+
+`get_balance` **no cambia**: sigue siendo el saldo DISPONIBLE por activo (lo
+que pregunta un grafo antes de entrar). El total valorado es `get_account_summary`.

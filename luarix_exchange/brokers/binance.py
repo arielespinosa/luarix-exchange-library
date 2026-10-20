@@ -11,7 +11,16 @@ from binance.exceptions import BinanceAPIException, BinanceOrderException
 
 import logging
 
-from luarix_exchange.capabilities import Fees, OrderRoundtripProbe, ServerClock, SymbolRulesSource
+from luarix_exchange.capabilities import (
+    AccountSummarySource,
+    Fees,
+    FundingHistory,
+    IncomeHistory,
+    OrderRoundtripProbe,
+    ServerClock,
+    SymbolRulesSource,
+)
+from luarix_exchange.models.account import FundingMovement, IncomeEntry
 from luarix_exchange.models.fees import CommissionRates
 from luarix_exchange.models.book import OrderBook
 from luarix_exchange.models.brokers import BrokerPosition, Market
@@ -102,7 +111,17 @@ class SymbolFilters:
     min_notional: float = 10.0
 
 
-class BinanceBroker(Broker, SymbolRulesSource, ServerClock, Fees, OrderRoundtripProbe, BinanceStreamsMixin):
+class BinanceBroker(
+    Broker,
+    SymbolRulesSource,
+    ServerClock,
+    Fees,
+    OrderRoundtripProbe,
+    AccountSummarySource,
+    FundingHistory,
+    IncomeHistory,
+    BinanceStreamsMixin,
+):
     """Broker que conecta el framework con la API de Binance.
 
     Maneja tres modos de operación controlados por las variables de entorno:
@@ -326,6 +345,28 @@ class BinanceBroker(Broker, SymbolRulesSource, ServerClock, Fees, OrderRoundtrip
     def get_balance(self, market: str = "spot", asset: str | None = None) -> dict[str, float]:
         """Saldo disponible por activo en el mercado pedido ("spot"/"futures")."""
         return self.account_data_provider.get_balance(market, asset)
+
+    # ── Historial de cuenta (portafolio) ────────────────────────────────
+
+    def _require_mainnet(self, que: str) -> None:
+        # `/sapi` (depósitos, retiros) no existe en el testnet de spot: la
+        # llamada daría 404. Mejor decirlo con nombre propio.
+        if self.testnet:
+            raise NotImplementedError(f"El testnet de Binance no tiene {que}.")
+
+    def get_deposits(self, start, end) -> list[FundingMovement]:
+        self._require_mainnet("historial de depósitos")
+        crudos = self.account_data_provider.get_deposits(start, end)
+        return sorted((FundingMovement.from_binance_deposit(r) for r in crudos), key=lambda m: m.timestamp)
+
+    def get_withdrawals(self, start, end) -> list[FundingMovement]:
+        self._require_mainnet("historial de retiros")
+        crudos = self.account_data_provider.get_withdrawals(start, end)
+        return sorted((FundingMovement.from_binance_withdrawal(r) for r in crudos), key=lambda m: m.timestamp)
+
+    def get_income(self, start, end) -> list[IncomeEntry]:
+        crudos = self.account_data_provider.get_income(start, end)
+        return sorted((IncomeEntry.from_binance(r) for r in crudos), key=lambda e: e.timestamp)
 
     def get_positions(self, market: str = "spot", symbol: str | None = None) -> list[BrokerPosition]:
         """Posiciones abiertas.

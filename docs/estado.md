@@ -126,6 +126,21 @@ Verificado en sesiones anteriores contra la cuenta real de Bitunix:
     por Bitunix pero **no se han ejercitado contra la cuenta real** — hacen
     falta las API keys.
 
+!!! warning "Saldo valorado, depósitos e income (Fase 9, 2026-10-19)"
+    `get_account_summary`, `get_deposits`, `get_withdrawals` y `get_income`
+    están probados solo con clientes falsos (`tests/test_account_summary.py`).
+    Desde la máquina de desarrollo no se pudo ejercitar ninguno: Binance
+    responde *"Service unavailable from a restricted location"* y Bitunix
+    `10004 Invalid IP` (la IP no está en la whitelist de la key).
+
+    - Bitunix futuros: `free = available`, `locked = frozen + margin`,
+      no realizado `= crossUnrealizedPNL + isolationUnrealizedPNL`. Sale de
+      la documentación; confirmar con una cuenta con posiciones abiertas.
+    - `/api/spot/v1/common/rate/list` de Bitunix SÍ verificado (público,
+      2026-10-19): ~880 pares contra USDT en una llamada.
+    - Income de Binance se pide en tramos de 7 días por prudencia (no está
+      confirmado cuál es la ventana máxima de `/fapi/v1/income`).
+
 !!! warning "Los nombres de campo de `pending_positions`"
     `qty`, `side`, `avgOpenPrice`, `markPrice`, `unrealizedPNL`, `positionId`,
     `marginMode` salen de la documentación.

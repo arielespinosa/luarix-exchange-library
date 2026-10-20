@@ -37,6 +37,9 @@ class Capability(str, Enum):
     ORDER_UPDATE_STREAM = "order_update_stream"
     ASSET_INFO = "asset_info"
     ORDER_ROUNDTRIP = "order_roundtrip"
+    ACCOUNT_SUMMARY = "account_summary"
+    FUNDING_HISTORY = "funding_history"
+    INCOME_HISTORY = "income_history"
 
 
 # Capacidad -> la ABC que la define. Se rellena solo, al declararse cada ABC.

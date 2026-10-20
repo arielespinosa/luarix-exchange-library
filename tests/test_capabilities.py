@@ -109,7 +109,8 @@ class BrokerMatrixTests(unittest.TestCase):
 
         self.assertEqual(BinanceBroker.capabilities(), self.TRADING | self.STREAMS | {
             Capability.MARKET_DATA, Capability.SYMBOL_RULES, Capability.DERIVATIVES, Capability.NATIVE_OCO,
-            Capability.SERVER_CLOCK, Capability.FEES, Capability.ORDER_ROUNDTRIP})
+            Capability.SERVER_CLOCK, Capability.FEES, Capability.ORDER_ROUNDTRIP,
+            Capability.ACCOUNT_SUMMARY, Capability.FUNDING_HISTORY, Capability.INCOME_HISTORY})
         self.assertTrue(BinanceBroker.has_native(Capability.ORDER_UPDATE_STREAM, "spot"))
         self.assertEqual(BinanceBroker.markets, {Market.SPOT, Market.FUTURES})
 
@@ -117,7 +118,7 @@ class BrokerMatrixTests(unittest.TestCase):
         from luarix_exchange.brokers.bitunix import BitunixBroker
 
         self.assertEqual(BitunixBroker.capabilities(), self.TRADING | self.STREAMS | {
-            Capability.MARKET_DATA, Capability.SYMBOL_RULES, Capability.DERIVATIVES})
+            Capability.MARKET_DATA, Capability.SYMBOL_RULES, Capability.DERIVATIVES, Capability.ACCOUNT_SUMMARY})
         # WebSocket solo en futuros; spot va por polling.
         self.assertTrue(BitunixBroker.has_native(Capability.CANDLE_STREAM, "futures"))
         self.assertFalse(BitunixBroker.has_native(Capability.CANDLE_STREAM, "spot"))
