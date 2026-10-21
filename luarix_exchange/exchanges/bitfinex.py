@@ -46,6 +46,7 @@ from luarix_exchange.capabilities import (
     OrderBookStream,
     ServerClock,
     SymbolRulesSource,
+    TickerStats,
     assets_from_rules,
 )
 from luarix_exchange.capabilities.streams import OnBook, OnCandle
@@ -54,7 +55,7 @@ from luarix_exchange.models.assets import AssetListing
 from luarix_exchange.models.book import OrderBook
 from luarix_exchange.models.brokers import Market
 from luarix_exchange.models.fees import CommissionRates
-from luarix_exchange.models.market import Candle
+from luarix_exchange.models.market import Candle, Ticker24h
 from luarix_exchange.models.rules import SymbolRules
 from luarix_exchange.streaming._util import deliver
 from luarix_exchange.streaming.candles import ClosedCandleEmitter
@@ -115,6 +116,19 @@ def rules_from_pair(pair: str, info: list, currency_map: dict[str, str]) -> Symb
         market=Market.SPOT,
         fee_on="received",
         raw=info,
+    )
+
+
+def ticker_from_bitfinex(row: list, rules: SymbolRules) -> Ticker24h:
+    """Una fila de par de `/v2/tickers`: [SYMBOL, BID, BID_SIZE, ASK, ASK_SIZE,
+    DAILY_CHANGE, DAILY_CHANGE_RELATIVE, LAST_PRICE, VOLUME, HIGH, LOW]. Sin
+    volumen en quote: se estima con el último precio."""
+    last = float(row[7])
+    volume = float(row[8])
+    return Ticker24h(
+        symbol=rules.symbol, base=rules.base, quote=rules.quote, market=Market.SPOT.value,
+        last=last, open=last - float(row[5]), high=float(row[9]), low=float(row[10]),
+        change_pct=float(row[6]) * 100, volume_base=volume, volume_quote=volume * last,
     )
 
 
@@ -227,7 +241,7 @@ def _control(data: dict, etiqueta: str) -> None:
 # ── El exchange ──────────────────────────────────────────────────────────
 
 class BitfinexExchange(Exchange, MarketData, SymbolRulesSource, ServerClock, Fees, AssetInfo, OrderBookStream,
-                       CandleStream):
+                       CandleStream, TickerStats):
     name = "bitfinex"
     label = "Bitfinex"
     markets = frozenset({Market.SPOT})
@@ -328,6 +342,17 @@ class BitfinexExchange(Exchange, MarketData, SymbolRulesSource, ServerClock, Fee
         """`/ticker`: [BID, BID_SIZE, ASK, ASK_SIZE, DAILY_CHANGE, DAILY_CHANGE_REL, LAST_PRICE, ...]."""
         self._spot(market)
         return float(self._public(f"ticker/{self._check(symbol)}")[6])
+
+    def get_tickers_24h(self, market: str = "spot") -> list[Ticker24h]:
+        """Todos los pares en una llamada; las filas de funding (`f...`) y los
+        pares sin reglas se omiten."""
+        self._spot(market)
+        rules = self._load_pairs()
+        return [
+            ticker_from_bitfinex(row, rules[row[0]])
+            for row in self._public("tickers", symbols="ALL")
+            if isinstance(row, list) and len(row) >= 11 and row[0] in rules
+        ]
 
     def get_order_book(self, symbol: str, limit: int = 20, market: str = "spot") -> OrderBook:
         self._spot(market)

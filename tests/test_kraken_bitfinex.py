@@ -178,7 +178,8 @@ class BitfinexParseTests(unittest.TestCase):
 
 class RegistroTests(unittest.TestCase):
     ESPERADAS = {Capability.MARKET_DATA, Capability.SYMBOL_RULES, Capability.SERVER_CLOCK, Capability.FEES,
-                 Capability.ASSET_INFO, Capability.ORDER_BOOK_STREAM, Capability.CANDLE_STREAM}
+                 Capability.ASSET_INFO, Capability.ORDER_BOOK_STREAM, Capability.CANDLE_STREAM,
+                 Capability.TICKER_STATS}
 
     def test_matriz(self):
         self.assertEqual(ExchangeFactory.capabilities("kraken"), self.ESPERADAS)

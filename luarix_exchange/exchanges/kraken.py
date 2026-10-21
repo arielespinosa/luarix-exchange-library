@@ -53,13 +53,14 @@ from luarix_exchange.capabilities import (
     OrderBookStream,
     ServerClock,
     SymbolRulesSource,
+    TickerStats,
 )
 from luarix_exchange.capabilities.streams import OnBook, OnCandle
 from luarix_exchange.models.assets import AssetListing
 from luarix_exchange.models.book import OrderBook
 from luarix_exchange.models.brokers import Market
 from luarix_exchange.models.fees import CommissionRates
-from luarix_exchange.models.market import Candle
+from luarix_exchange.models.market import Candle, Ticker24h, pct_change
 from luarix_exchange.models.rules import SymbolRules
 from luarix_exchange.exchanges._common import run_async
 from luarix_exchange.streaming._util import deliver, iso_to_ms
@@ -118,6 +119,19 @@ def rules_from_pair(info: dict, assets: Mapping[str, dict] | None = None) -> Sym
         market=Market.SPOT,
         fee_on="quote",
         raw=info,
+    )
+
+
+def ticker_from_kraken(row: dict, rules: SymbolRules) -> Ticker24h:
+    """Una entrada de `/0/public/Ticker`. Las listas son [hoy, últimas 24h];
+    el volumen en quote se estima con el VWAP de 24h (`p[1]`)."""
+    last = float(row["c"][0])
+    open_ = float(row.get("o") or 0)
+    volume = float(row["v"][1])
+    return Ticker24h(
+        symbol=rules.symbol, base=rules.base, quote=rules.quote, market=Market.SPOT.value,
+        last=last, open=open_, high=float(row["h"][1]), low=float(row["l"][1]),
+        change_pct=pct_change(open_, last), volume_base=volume, volume_quote=volume * float(row["p"][1]),
     )
 
 
@@ -245,7 +259,7 @@ def _now_ms() -> int:
 # ── El exchange ──────────────────────────────────────────────────────────
 
 class KrakenExchange(Exchange, MarketData, SymbolRulesSource, ServerClock, Fees, AssetInfo, OrderBookStream,
-                     CandleStream):
+                     CandleStream, TickerStats):
     name = "kraken"
     label = "Kraken"
     markets = frozenset({Market.SPOT})
@@ -353,6 +367,17 @@ class KrakenExchange(Exchange, MarketData, SymbolRulesSource, ServerClock, Fees,
         self._spot(market)
         result = self._public("Ticker", pair=self._key(symbol))
         return float(next(iter(result.values()))["c"][0])
+
+    def get_tickers_24h(self, market: str = "spot") -> list[Ticker24h]:
+        """Todos los pares en una llamada (`Ticker` sin `pair`)."""
+        self._spot(market)
+        rules = self._load_pairs()
+        by_key = {key: symbol for symbol, key in self._pair_keys.items()}
+        return [
+            ticker_from_kraken(row, rules[by_key[key]])
+            for key, row in self._public("Ticker").items()
+            if key in by_key
+        ]
 
     def get_order_book(self, symbol: str, limit: int = 20, market: str = "spot") -> OrderBook:
         self._spot(market)

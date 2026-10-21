@@ -15,16 +15,19 @@ from luarix_exchange.capabilities import (
     AccountSummarySource,
     Fees,
     FundingHistory,
+    FundingRates,
     IncomeHistory,
     OrderRoundtripProbe,
     ServerClock,
     SymbolRulesSource,
+    TickerStats,
 )
 from luarix_exchange.models.account import FundingMovement, IncomeEntry
 from luarix_exchange.models.fees import CommissionRates
 from luarix_exchange.models.book import OrderBook
 from luarix_exchange.models.brokers import BrokerPosition, Market
 from luarix_exchange.models.rules import SymbolRules
+from luarix_exchange.models.market import FundingRate, Ticker24h, ms_to_datetime, pct_change
 from luarix_exchange.models.orders import (
     Entry, Fill, OrderAck, OrderInfo, OrderRequest, OrderStatus, OrderType, TimeInForce,
 )
@@ -94,6 +97,29 @@ def rules_from_binance_symbol(info: dict, market: Market | str) -> SymbolRules:
     )
 
 
+def ticker_from_binance(row: dict, rules: SymbolRules, market: Market | str) -> Ticker24h:
+    """Una fila de `/api/v3/ticker/24hr` (o `/fapi/v1/ticker/24hr`) → `Ticker24h`."""
+    last = float(row.get("lastPrice") or 0)
+    open_ = float(row.get("openPrice") or 0)
+    change = row.get("priceChangePercent")
+    return Ticker24h(
+        symbol=row["symbol"], base=rules.base, quote=rules.quote, market=Market(market).value,
+        last=last, open=open_, high=float(row.get("highPrice") or 0), low=float(row.get("lowPrice") or 0),
+        change_pct=float(change) if change not in (None, "") else pct_change(open_, last),
+        volume_base=float(row.get("volume") or 0), volume_quote=float(row.get("quoteVolume") or 0),
+        time=ms_to_datetime(row.get("closeTime")),
+    )
+
+
+def funding_from_binance(row: dict, rules: SymbolRules) -> FundingRate:
+    """Una fila de `/fapi/v1/premiumIndex`: `lastFundingRate` ya es fracción."""
+    return FundingRate(
+        symbol=row["symbol"], base=rules.base, quote=rules.quote, rate=float(row["lastFundingRate"]),
+        mark_price=float(row["markPrice"]) if row.get("markPrice") else None,
+        next_funding_time=ms_to_datetime(row.get("nextFundingTime")),
+    )
+
+
 @dataclass
 class SymbolFilters:
     """Reglas de precisión que Binance exige para un símbolo.
@@ -120,6 +146,8 @@ class BinanceBroker(
     AccountSummarySource,
     FundingHistory,
     IncomeHistory,
+    TickerStats,
+    FundingRates,
     BinanceStreamsMixin,
 ):
     """Broker que conecta el framework con la API de Binance.
@@ -202,6 +230,12 @@ class BinanceBroker(
         # Caché de `get_symbol_rules` por mercado (una llamada a exchangeInfo).
         self._rules_cache: dict[Market, dict[str, SymbolRules]] = {}
         self.sync_clock()
+
+    @classmethod
+    def public(cls) -> "BinanceBroker":
+        """Datos públicos de PRODUCCIÓN, sin claves: `create()` apunta a
+        testnet por defecto, y testnet no tiene las estadísticas reales."""
+        return cls.create(testnet=False, public_only=True)
 
     def connect(self) -> None:
         """Verifica que la conexión con Binance está activa (ping)."""
@@ -324,6 +358,33 @@ class BinanceBroker(
     # ─────────────────────────────────────────────
     # Market data (minimal — only what the strategy needs)
     # ─────────────────────────────────────────────
+
+    def get_tickers_24h(self, market: str = "spot") -> list[Ticker24h]:
+        """Las 24h de todos los pares en TRADING, en una llamada (peso 80 en
+        spot, 40 en futuros: pedirlas par a par costaría miles)."""
+        mercado = Market(market)
+        rules = self._stats_rules(mercado)
+        raw = self._client().futures_ticker() if mercado is Market.FUTURES else self._client().get_ticker()
+        return [ticker_from_binance(row, rules[row["symbol"]], mercado) for row in raw if row.get("symbol") in rules]
+
+    def get_funding_rates(self) -> list[FundingRate]:
+        """Funding de todos los perpetuos (`premiumIndex` sin símbolo). Los
+        contratos con vencimiento no tienen funding y se omiten."""
+        rules = self._stats_rules(Market.FUTURES)
+        return [
+            funding_from_binance(row, rules[row["symbol"]])
+            for row in self._client().futures_mark_price()
+            if row.get("symbol") in rules and row.get("lastFundingRate") not in (None, "")
+        ]
+
+    def _stats_rules(self, market: Market) -> dict[str, SymbolRules]:
+        """Los pares que entran en estadísticas: en futuros solo los
+        PERPETUOS (los trimestrales, `BTCUSDT_270326`, duplican al perpetuo
+        con otro precio y no tienen funding)."""
+        rules = self.get_symbol_rules(market)
+        if market is not Market.FUTURES:
+            return rules
+        return {s: r for s, r in rules.items() if (r.raw or {}).get("contractType", "PERPETUAL") == "PERPETUAL"}
 
     def get_ticker(self, symbol: str, market: str = "spot") -> float:
         """Devuelve el último precio de mercado para el símbolo indicado."""

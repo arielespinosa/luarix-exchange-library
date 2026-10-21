@@ -81,3 +81,54 @@ class Candle:
             volume=float(row["volume"]),
             is_closed=row.get("is_closed", True),
         )
+
+
+@dataclass(frozen=True)
+class Ticker24h:
+    """Lo que hizo un par en las últimas 24 horas, normalizado entre
+    exchanges: precios en la moneda cotizada, `change_pct` en puntos
+    porcentuales (2.5 = +2.5 %) y el volumen en base y en quote.
+
+    `volume_quote` es el que permite comparar pares entre sí (cuánto dinero
+    se movió); cuando el exchange no lo publica se estima con el precio."""
+
+    symbol: str       # identificador del par en el exchange
+    base: str         # activo base común ("BTC", nunca "XBT")
+    quote: str        # moneda cotizada común ("USDT")
+    market: str       # "spot" | "futures"
+    last: float
+    open: float
+    high: float
+    low: float
+    change_pct: float
+    volume_base: float
+    volume_quote: float
+    time: datetime | None = None
+
+
+@dataclass(frozen=True)
+class FundingRate:
+    """El funding actual de un perpetuo. `rate` es una FRACCIÓN por
+    intervalo (0.0001 = 0.01 %), sea cual sea la unidad del exchange."""
+
+    symbol: str
+    base: str
+    quote: str
+    rate: float
+    mark_price: float | None = None
+    interval_hours: float = 8.0
+    next_funding_time: datetime | None = None
+
+
+def pct_change(open_: float, last: float) -> float:
+    """Cambio porcentual entre apertura y último precio; 0 sin apertura."""
+    return (last - open_) / open_ * 100 if open_ else 0.0
+
+
+def ms_to_datetime(value: object) -> datetime | None:
+    """Milisegundos epoch (número o texto) → `datetime` UTC; `None` si no hay."""
+    try:
+        ms = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    return datetime.fromtimestamp(ms / 1000, tz=UTC) if ms > 0 else None

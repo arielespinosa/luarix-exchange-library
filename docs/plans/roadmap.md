@@ -303,6 +303,22 @@ Plan y pasos en [`historial-de-cuenta.md`](historial-de-cuenta.md).
 - [ ] Verificar los cuatro contra cuentas reales (ver `docs/estado.md`)
 - [ ] Bitunix: depósitos/retiros e historial de futuros, si la API los tiene
 
+## Fase 10 — Datos de mercado para el resumen y el screener ✅ 2026-10-21
+
+Plan: `docs/plans/datos_de_mercado.md`. Lo pide la pantalla de Mercados de
+luarix-web-client (vía `luarix_trading.market` del framework).
+
+- [x] Capacidad `TICKER_STATS` (`get_tickers_24h`): Binance (spot y futuros
+  perpetuos), Bitunix (solo futuros: su spot no publica estadísticas en
+  bloque), Kraken y Bitfinex (spot) ✅ 2026-10-21
+- [x] Capacidad `FUNDING_RATES` (`get_funding_rates`, `rate` en fracción):
+  Binance y Bitunix ✅ 2026-10-21
+- [x] `Exchange.capability_markets` / `markets_for()`: una capacidad puede
+  existir solo en algunos mercados ✅ 2026-10-21
+- [x] `Exchange.public()`: instancia de datos públicos de producción ✅ 2026-10-21
+- [x] `luarix_exchange.sources`: CoinGecko (capitalización, dominancia,
+  ranking) y alternative.me (Fear & Greed) ✅ 2026-10-21
+
 ---
 
 ## Reglas para todo el roadmap

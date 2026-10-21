@@ -9,7 +9,14 @@ from luarix_exchange.brokers.bitunix_streams import BitunixStreamsMixin
 from luarix_exchange.brokers.bitunix_response import BitunixApiError, unwrap
 from luarix_exchange.brokers.credentials import BrokerCredentials, resolve_credentials
 from luarix_exchange.brokers.market_data.bitunix import BitunixMarketDataProvider
-from luarix_exchange.capabilities import AccountSummarySource, Capability, SymbolRulesSource
+from luarix_exchange.capabilities import (
+    AccountSummarySource,
+    Capability,
+    FundingRates,
+    SymbolRulesSource,
+    TickerStats,
+)
+from luarix_exchange.models.market import FundingRate, Ticker24h, ms_to_datetime, pct_change
 from luarix_exchange.models.book import OrderBook
 from luarix_exchange.models.brokers import BrokerPosition, Market
 from luarix_exchange.models.rules import SymbolRules
@@ -21,7 +28,30 @@ from luarix_exchange.models.orders import Side
 logger = logging.getLogger(__name__)
 
 
-class BitunixBroker(Broker, SymbolRulesSource, AccountSummarySource, BitunixStreamsMixin):
+def ticker_from_bitunix(row: dict, rules: SymbolRules) -> Ticker24h:
+    """Una fila de `/futures/market/tickers` → `Ticker24h` (no trae % de cambio)."""
+    last = float(row.get("last") or row.get("lastPrice") or 0)
+    open_ = float(row.get("open") or 0)
+    return Ticker24h(
+        symbol=row["symbol"], base=rules.base, quote=rules.quote, market=Market.FUTURES.value,
+        last=last, open=open_, high=float(row.get("high") or 0), low=float(row.get("low") or 0),
+        change_pct=pct_change(open_, last),
+        volume_base=float(row.get("baseVol") or 0), volume_quote=float(row.get("quoteVol") or 0),
+    )
+
+
+def funding_from_bitunix(row: dict, rules: SymbolRules) -> FundingRate:
+    """Una fila de `/futures/market/funding_rate/batch`; su `fundingRate` va
+    en porcentaje y se pasa a fracción."""
+    return FundingRate(
+        symbol=row["symbol"], base=rules.base, quote=rules.quote, rate=float(row["fundingRate"]) / 100,
+        mark_price=float(row["markPrice"]) if row.get("markPrice") else None,
+        interval_hours=float(row.get("fundingInterval") or 8),
+        next_funding_time=ms_to_datetime(row.get("nextFundingTime")),
+    )
+
+
+class BitunixBroker(Broker, SymbolRulesSource, AccountSummarySource, TickerStats, FundingRates, BitunixStreamsMixin):
     """Bitunix: spot y futuros perpetuos USDT-M.
 
     Dos APIs distintas en dos hosts distintos. El paquete `bitunix` de PyPI
@@ -62,6 +92,9 @@ class BitunixBroker(Broker, SymbolRulesSource, AccountSummarySource, BitunixStre
     # y reventaba con TypeError en la primera cancelación real).
     supports_independent_orders = True
     unsupported = frozenset({Capability.NATIVE_OCO})
+    # Su spot no publica las 24h de todos los pares (solo velas y último
+    # precio par a par): la estadística masiva existe únicamente en futuros.
+    capability_markets = {Capability.TICKER_STATS: frozenset({Market.FUTURES})}
 
     @classmethod
     def create(
@@ -123,6 +156,33 @@ class BitunixBroker(Broker, SymbolRulesSource, AccountSummarySource, BitunixStre
 
     def get_ticker(self, symbol: str, market: str = "spot") -> float:
         return self.market_data_provider.get_last_price(symbol, market=market)
+
+    @classmethod
+    def public(cls) -> "BitunixBroker":
+        """Datos públicos sin claves (Bitunix no tiene testnet). Su SDK
+        exige una clave aunque los endpoints públicos no firmen: se le da una
+        de relleno, y cualquier llamada privada fallará en el exchange."""
+        credentials = BrokerCredentials.from_env("BITUNIX")
+        if credentials:
+            return cls.create(credentials=credentials)
+        return cls(api_key="public", api_secret="public")
+
+    def get_tickers_24h(self, market: str = "spot") -> list[Ticker24h]:
+        self.require(Capability.TICKER_STATS, market)
+        rules = self.get_symbol_rules(Market.FUTURES)
+        return [
+            ticker_from_bitunix(row, rules[row["symbol"]])
+            for row in self.market_data_provider.futures.tickers()
+            if row.get("symbol") in rules
+        ]
+
+    def get_funding_rates(self) -> list[FundingRate]:
+        rules = self.get_symbol_rules(Market.FUTURES)
+        return [
+            funding_from_bitunix(row, rules[row["symbol"]])
+            for row in self.market_data_provider.futures.funding_rates()
+            if row.get("symbol") in rules and row.get("fundingRate") not in (None, "")
+        ]
 
     def list_symbols(self, market: str = "spot") -> list[str]:
         """Los pares abiertos a la operación en ese mercado, en MAYÚSCULAS.

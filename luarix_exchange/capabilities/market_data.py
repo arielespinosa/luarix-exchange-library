@@ -10,7 +10,7 @@ from datetime import datetime
 from luarix_exchange.capabilities.base import Capability, CapabilityInterface
 from luarix_exchange.models.assets import AssetListing
 from luarix_exchange.models.book import OrderBook
-from luarix_exchange.models.market import Candle
+from luarix_exchange.models.market import Candle, FundingRate, Ticker24h
 from luarix_exchange.models.rules import SymbolRules
 
 
@@ -52,6 +52,29 @@ class MarketData(CapabilityInterface):
     @abstractmethod
     def list_symbols(self, market: str = "spot") -> list[str]:
         """Los pares operables en ese mercado, con el identificador que espera el exchange."""
+
+
+class TickerStats(CapabilityInterface):
+    """Las estadísticas de 24 horas de TODOS los pares de un mercado en una
+    sola llamada: lo que necesita un resumen de mercado o un screener, sin
+    pedir par a par."""
+
+    capability = Capability.TICKER_STATS
+
+    @abstractmethod
+    def get_tickers_24h(self, market: str = "spot") -> list[Ticker24h]:
+        """Un `Ticker24h` por par operable del mercado (los que el exchange
+        tenga sin estadística se omiten)."""
+
+
+class FundingRates(CapabilityInterface):
+    """El funding actual de todos los perpetuos."""
+
+    capability = Capability.FUNDING_RATES
+
+    @abstractmethod
+    def get_funding_rates(self) -> list[FundingRate]:
+        """Un `FundingRate` por perpetuo, con `rate` como fracción."""
 
 
 class SymbolRulesSource(CapabilityInterface):

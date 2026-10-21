@@ -40,6 +40,8 @@ class Capability(str, Enum):
     ACCOUNT_SUMMARY = "account_summary"
     FUNDING_HISTORY = "funding_history"
     INCOME_HISTORY = "income_history"
+    TICKER_STATS = "ticker_stats"
+    FUNDING_RATES = "funding_rates"
 
 
 # Capacidad -> la ABC que la define. Se rellena solo, al declararse cada ABC.
@@ -83,6 +85,10 @@ class Exchange(ABC):
     # sus `markets`. Bitunix: velas/libros/órdenes nativos solo en futuros; su
     # spot va por polling.
     native_stream_markets: ClassVar[dict[Capability, frozenset[Market]]] = {}
+    # En qué mercados existe una capacidad, cuando no es en todos sus
+    # `markets`. Bitunix publica las estadísticas de 24h de TODOS los pares
+    # solo en futuros: su spot no tiene ese endpoint.
+    capability_markets: ClassVar[dict[Capability, frozenset[Market]]] = {}
 
     @classmethod
     def has_native(cls, capability: Capability | str, market: Market | str | None = None) -> bool:
@@ -105,9 +111,20 @@ class Exchange(ABC):
     @classmethod
     def supports(cls, capability: Capability | str, market: Market | str | None = None) -> bool:
         """¿Tiene la capacidad (y, si se indica, en ese mercado)?"""
-        if market is not None and not cls.supports_market(market):
+        cap = Capability(capability)
+        if cap not in cls.capabilities():
             return False
-        return Capability(capability) in cls.capabilities()
+        if market is None:
+            return True
+        return cls.supports_market(market) and Market(market) in cls.capability_markets.get(cap, cls.markets)
+
+    @classmethod
+    def markets_for(cls, capability: Capability | str) -> frozenset[Market]:
+        """Los mercados en los que tiene la capacidad (vacío si no la tiene)."""
+        cap = Capability(capability)
+        if cap not in cls.capabilities():
+            return frozenset()
+        return cls.capability_markets.get(cap, cls.markets) & cls.markets
 
     @classmethod
     def display_name(cls) -> str:
@@ -119,6 +136,17 @@ class Exchange(ABC):
             raise NotImplementedError(f"{self.display_name()} no tiene mercado {Market(market).value}.")
         if Capability(capability) not in self.capabilities():
             raise NotImplementedError(f"{self.display_name()} no soporta {Capability(capability).value}.")
+        if market is not None and not self.supports(capability, market):
+            raise NotImplementedError(
+                f"{self.display_name()} no ofrece {Capability(capability).value} en {Market(market).value}."
+            )
+
+    @classmethod
+    def public(cls) -> Exchange:
+        """Una instancia para datos PÚBLICOS de producción (precios, pares,
+        estadísticas), sin claves. Por defecto `create()`; los exchanges con
+        testnet o claves obligatorias la redefinen."""
+        return cls.create()
 
     @classmethod
     def create(cls, credentials: Any = None, **options: Any) -> Exchange:

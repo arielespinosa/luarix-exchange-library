@@ -53,6 +53,8 @@ KLINE = "/api/v1/futures/market/kline"
 DEPTH = "/api/v1/futures/market/depth"
 DEPTH_LIMITS = (1, 5, 15, 50)
 TRADING_PAIRS = "/api/v1/futures/market/trading_pairs"
+TICKERS = "/api/v1/futures/market/tickers"
+FUNDING_RATES = "/api/v1/futures/market/funding_rate/batch"
 
 # La cuenta de futuros se consulta por moneda de margen, de una en una (a
 # diferencia de spot, que devuelve todas). USDT es la única realista hoy.
@@ -285,6 +287,16 @@ class BitunixFuturesClient:
         permitido = next((n for n in DEPTH_LIMITS if n >= limit), "max")
         return self._public_get(DEPTH, {"symbol": symbol, "limit": permitido},
                                 "la consulta del libro de futuros", on_null={}) or {}
+
+    def tickers(self) -> list[dict]:
+        """Las 24h de todos los perpetuos: `last`, `open`, `high`, `low`,
+        `baseVol`, `quoteVol`, `markPrice`."""
+        return list(self._public_get(TICKERS, None, "la consulta de tickers de futuros", on_null=[]) or [])
+
+    def funding_rates(self) -> list[dict]:
+        """El funding de todos los perpetuos. OJO: `fundingRate` viene en
+        PORCENTAJE (`-0.0006` = -0.0006 %), no en fracción como Binance."""
+        return list(self._public_get(FUNDING_RATES, None, "la consulta de funding", on_null=[]) or [])
 
     def trading_pairs(self) -> list[dict]:
         """Todos los pares de futuros con su precisión (`basePrecision`,

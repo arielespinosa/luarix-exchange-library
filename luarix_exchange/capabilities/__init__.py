@@ -7,9 +7,11 @@ Importar este paquete registra TODAS las capacidades, que es lo que necesita
 from luarix_exchange.capabilities.base import CAPABILITY_ABCS, Capability, CapabilityInterface, Exchange
 from luarix_exchange.capabilities.market_data import (
     AssetInfo,
+    FundingRates,
     MarketData,
     ServerClock,
     SymbolRulesSource,
+    TickerStats,
     assets_from_rules,
 )
 from luarix_exchange.capabilities.streams import (
@@ -43,6 +45,7 @@ __all__ = [
     "Exchange",
     "Fees",
     "FundingHistory",
+    "FundingRates",
     "IncomeHistory",
     "MarketData",
     "NativeOco",
@@ -51,6 +54,7 @@ __all__ = [
     "OrderUpdateStream",
     "ServerClock",
     "SymbolRulesSource",
+    "TickerStats",
     "Trading",
     "assets_from_rules",
 ]
