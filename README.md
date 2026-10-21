@@ -48,6 +48,9 @@ Empieza por **Inicio rápido**. **Antes de operar con dinero**, lee la página
 
 ```
 luarix_exchange/
+├── capabilities/      # Qué sabe hacer un exchange: MarketData, Account, Trading,
+│                      #   NativeOco, SymbolRulesSource, streams... (Fase 3)
+├── factory.py         # ExchangeFactory: crear por nombre y consultar capacidades
 ├── brokers/           # Conectores concretos detrás de brokers.base.Broker
 │   ├── base.py        #   la interfaz abstracta que todos implementan
 │   ├── factory.py     #   BrokerFactory: nombre -> broker configurado
@@ -58,17 +61,32 @@ luarix_exchange/
 │   ├── mt5.py
 │   ├── account_data/  #   balance, posiciones y órdenes abiertas por broker
 │   └── market_data/   #   velas históricas/recientes y feeds en vivo
-└── models/            # Velas, órdenes, fills, posiciones
+└── models/            # Velas, órdenes, fills, posiciones; y en Decimal: OrderBook,
+                       #   SymbolRules, CommissionRates, OrderUpdate
 ```
 
 ## Instalación
 
-La instalación base solo trae `pandas` — suficiente para `PaperBroker` y
-todos los modelos:
+Desde GitHub (lo que usan los otros repos; fija siempre un commit, ver abajo):
 
 ```bash
-pip install -e .
+pip install "luarix-exchange-library[all] @ git+https://github.com/arielespinosa/luarix-exchange-library.git@<commit>"
 ```
+
+Desde el repo clonado, en editable (desarrollo):
+
+```bash
+pip install -e ".[all]"
+```
+
+> **Ojo — fijar el commit:** `luarix-trading-framework`, `luarix-web-server`
+> y `luarix-orchestator` fijan esta librería con la MISMA URL
+> (`...luarix-exchange-library.git@<sha>`). Si dos de ellos piden URLs
+> distintas, `pip` aborta con `ResolutionImpossible`. Al publicar una versión
+> nueva, cambia el commit en los tres a la vez.
+
+La instalación base solo trae `pandas` — suficiente para `PaperBroker` y
+todos los modelos.
 
 Cada broker real es un extra opcional:
 

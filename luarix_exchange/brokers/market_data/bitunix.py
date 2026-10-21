@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+from decimal import Decimal
 
 import pandas as pd
 import requests
@@ -49,6 +50,7 @@ class BitunixMarketDataProvider(MarketDataProvider):
         # El kline de futuros vive en `fapi.bitunix.com` y es público. Se
         # reutiliza el cliente de futuros en vez de repetir la URL acá.
         self.futures = BitunixFuturesClient(api_key, api_secret)
+        self._spot_pairs: dict[str, dict] | None = None
 
     # Códigos de intervalo reales del kline de SPOT (ver el docstring de
     # `BitunixClient.get_kline_data`: "1,3,5,15,30,60,120,240,360,720,D,M,W").
@@ -303,9 +305,41 @@ class BitunixMarketDataProvider(MarketDataProvider):
         return float(data.get("price", 0.0))
 
     def get_order_book(self, symbol: str, limit: int = 20, market: str = "spot") -> dict:
+        """El libro CRUDO de Bitunix (lo normaliza `BitunixBroker.get_order_book`).
+
+        - Futuros: `{"asks": [[precio, cantidad], ...], "bids": [...]}`.
+        - Spot: `{"asks": [{"price", "volume"}, ...], "bids": [...]}`.
+
+        ⚠ Spot pide `precision` = el TAMAÑO del agrupamiento ("0.01", "0.1",
+        "1"...), que depende del par. Antes se mandaba `2` fijo: la API lo
+        acepta, responde `success` y devuelve las dos listas VACÍAS -- o sea,
+        un libro vacío en silencio, para cualquier par (verificado
+        2026-10-16). Ahora se usa la precisión más fina que el par anuncia.
+        """
         if market == "futures":
-            raise NotImplementedError(
-                "El libro de órdenes de los futuros de Bitunix no está implementado -- "
-                "no se ha verificado su endpoint contra la API real."
-            )
-        return unwrap(self.client.get_depth_data(symbol, 2), "la consulta del libro de órdenes", on_null={})
+            return self.futures.depth(symbol, limit)
+        precision = self.finest_spot_precision(symbol)
+        return unwrap(self.client.get_depth_data(symbol, precision), "la consulta del libro de órdenes", on_null={})
+
+    def spot_pairs(self) -> dict[str, dict]:
+        """Metadatos de los pares de SPOT por símbolo en MAYÚSCULAS, cacheados.
+
+        El endpoint los da en minúsculas (`"btcusdt"`) aunque el resto de la
+        API acepta y devuelve mayúsculas."""
+        if getattr(self, "_spot_pairs", None) is None:
+            data = unwrap(self.client.get_trading_pairs(), "la consulta de pares operables", on_null=[])
+            self._spot_pairs = {
+                str(item.get("symbol") or item.get("pair")).upper(): item
+                for item in data or [] if isinstance(item, dict) and (item.get("symbol") or item.get("pair"))
+            }
+        return self._spot_pairs
+
+    def finest_spot_precision(self, symbol: str) -> str:
+        """La agrupación más fina del libro de spot para el par ("0.01" en BTCUSDT)."""
+        par = self.spot_pairs().get(symbol.upper())
+        if par is None:
+            raise ValueError(f"{symbol!r} no es un par de spot de Bitunix.")
+        precisiones = par.get("precisions") or []
+        if not precisiones:
+            raise ValueError(f"Bitunix no anuncia precisiones de libro para {symbol!r}.")
+        return min(precisiones, key=lambda p: Decimal(str(p)))

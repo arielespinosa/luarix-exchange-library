@@ -1,8 +1,9 @@
 from enum import Enum
 
 from luarix_exchange.brokers.base import Broker
-from luarix_exchange.brokers.credentials import BrokerCredentials
+from luarix_exchange.brokers.credentials import BrokerCredentials, resolve_credentials
 from luarix_exchange.brokers.paper import PaperBroker
+from luarix_exchange.factory import ExchangeFactory
 
 
 class AvailableBrokers(Enum):
@@ -84,37 +85,16 @@ class BrokerFactory:
         if broker is AvailableBrokers.PAPER:
             return PaperBroker()
 
-        creds = cls._resolve_credentials(broker, credentials)
-
-        if broker is AvailableBrokers.BINANCE:
-            # Import PEREZOSO, no por estilo: cada broker real arrastra su
-            # propio SDK y ninguno es obligatorio (son extras de
-            # `pyproject.toml`). Importándolos arriba, una instalación base
-            # -- o una que solo tenga el extra `[bitunix]` -- no podía ni
-            # importar esta factory para pedir un PaperBroker.
-            from luarix_exchange.brokers.binance import BinanceBroker
-
-            api_key, api_secret = creds.resolve(bool(testnet))
-            return BinanceBroker(
-                api_key=api_key,
-                api_secret=api_secret,
-                testnet=bool(testnet),
-                test_order=test_order,
-                trading_mode=trading_mode,
-                allow_live_trading=allow_live_trading,
-            )
-
-        from luarix_exchange.brokers.bitunix import BitunixBroker
-
-        # `resolve(False)` a propósito: Bitunix NO tiene testnet. Pedirle las
-        # credenciales de prueba devolvía `("", "")` y la primera llamada
-        # fallaba con un `10003 API key inexistente` que no dice nada de la
-        # causa real -- y eso ocurría con el DEFAULT de esta factory
-        # (`testnet=True`), o sea siempre que alguien no lo pensara.
-        api_key, api_secret = creds.resolve(False)
-        return BitunixBroker(
-            api_key=api_key,
-            api_secret=api_secret,
+        # Desde la Fase 3 la construcción vive en `create()` de cada broker y
+        # se pide por `ExchangeFactory`, que importa el módulo PEREZOSAMENTE:
+        # cada broker real arrastra su propio SDK y ninguno es obligatorio
+        # (extras de `pyproject.toml`). Así una instalación base -- o una con
+        # solo `[bitunix]` -- puede importar esta factory para pedir un Paper.
+        return ExchangeFactory.create(
+            broker.value.lower(),
+            credentials=credentials,
+            testnet=testnet,
+            test_order=test_order,
             trading_mode=trading_mode,
             allow_live_trading=allow_live_trading,
         )
@@ -135,17 +115,5 @@ class BrokerFactory:
     def _resolve_credentials(
         broker: AvailableBrokers, credentials: BrokerCredentials | None,
     ) -> BrokerCredentials:
-        if credentials:
-            return credentials
-        # `credentials` puede llegar como un objeto VACÍO (todos los campos
-        # en "") desde un backend que aún no tiene claves para ese usuario.
-        # `BrokerCredentials.__bool__` lo detecta, así que ese caso también
-        # cae al `.env` en vez de mandar cadenas vacías al exchange.
-        del_entorno = BrokerCredentials.from_env(broker.value)
-        if del_entorno:
-            return del_entorno
-        raise ValueError(
-            f"No hay credenciales para {broker.value}. Pásalas con "
-            f"`credentials=BrokerCredentials(api_key=..., api_secret=...)`, o define "
-            f"{broker.value}_API_KEY y {broker.value}_API_SECRET en el entorno o en el .env."
-        )
+        """Compatibilidad: la lógica vive en `credentials.resolve_credentials`."""
+        return resolve_credentials(broker.value, credentials)

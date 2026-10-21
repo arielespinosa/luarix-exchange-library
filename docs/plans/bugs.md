@@ -880,3 +880,282 @@ Misma sesión que la entrada de arriba, verificando el resto de lo que
 Checklists de migración completos en `docs/integracion/orchestator.md` y
 `docs/integracion/web-server.md`.
 
+
+---
+
+## [2026-10-16] Fase 3 — contrato por capacidades
+
+Diseño: `docs/plans/fase3_contrato_capacidades.md`. Lo que conviene no
+re-descubrir:
+
+### El libro de SPOT de Bitunix salía VACÍO, siempre — ARREGLADO
+
+`BitunixMarketDataProvider.get_order_book` llamaba
+`client.get_depth_data(symbol, 2)`. `precision` NO es un número de decimales:
+es el TAMAÑO del agrupamiento de precios (`"0.01"`, `"0.1"`, `"1"`...) y depende
+del par (cada par anuncia sus `precisions` en `/api/spot/v1/common/coin_pair/list`).
+Con `2` la API responde `{"code":"0","msg":"result.success","data":{"asks":[],"bids":[]}}`
+-- éxito y libro vacío, sin ningún error. Nadie lo notó porque nadie leía el
+libro. Ahora se usa la precisión más fina del par (`finest_spot_precision`).
+
+### El libro de FUTUROS de Bitunix: solo `limit` 1, 5, 15, 50 o "max"
+
+`/api/v1/futures/market/depth` es público y funciona (verificado
+2026-10-16), pero cualquier otro `limit` devuelve
+`10008 Parameter 20 does not match, alternative value ["1","5","15","50","max"]`
+-- y 20 es el default de `get_order_book`. `BitunixFuturesClient.depth` pide
+el menor permitido que cubre lo pedido y el broker recorta.
+
+### Los pares de spot de Bitunix vienen en minúsculas
+
+`coin_pair/list` da `"symbol": "btcusdt"`, aunque el resto de la API acepta y
+devuelve mayúsculas. `spot_pairs()` los indexa en MAYÚSCULAS; `list_symbols`
+y `get_symbol_rules` devuelven mayúsculas. (El viejo `list_active` devolvía
+las minúsculas tal cual.)
+
+### Reglas de Bitunix: precisión en número de decimales
+
+`basePrecision=5` -> `step_size=0.00001`, `quotePrecision=2` -> `tick_size=0.01`.
+Validado comparando con el libro real: todos los precios del libro son
+múltiplos exactos del tick calculado, en spot y en futuros. Todavía NO
+contrastado con el rechazo de una orden real. Futuros no publica importe
+mínimo: `min_notional=0`.
+
+### Mecánica de las capacidades (para no romperla)
+
+- Una ABC se registra como "la" capacidad solo si declara
+  `capability = Capability.X` EN SU PROPIO CUERPO. Redeclarar una capacidad ya
+  registrada en otra clase levanta `TypeError` (test incluido).
+- `Broker` hereda TODAS las capacidades de trading por compatibilidad. Un
+  broker que no soporte alguna la pone en `unsupported`; si no, mentiría
+  (Bitunix: `NATIVE_OCO`; Paper y MT5: `MARKET_DATA`, `DERIVATIVES`).
+- `supports_oco`/`supports_futures` son descriptores DERIVADOS
+  (`_DerivedClassFlag`), legibles desde la clase y la instancia. Un doble de
+  test que los fije con un atributo normal sigue funcionando (lo tapa).
+  `tests/test_broker_flags_compat.py` fija los valores de antes de la fase.
+- `ExchangeFactory` guarda RUTAS "modulo:Clase": importarla no carga ningún
+  SDK (test en subproceso limpio). Pedir las capacidades de un exchange SÍ
+  importa su módulo.
+
+### Verificación de la fase
+
+- Librería: 206 tests (164 de antes sin tocar + 42 nuevos).
+- APIs reales (públicas): libro, reglas y `list_symbols` en Binance y Bitunix,
+  spot y futuros.
+- orchestator (rama `fix/position-exit-luarix-exchange`), con las rutas viejas
+  bloqueadas: 1037 passed, mismo fallo preexistente.
+- web-server (`saas`), con orchestator parado: el MISMO conjunto de 21 fallos
+  que la línea base del 2026-10-14 (paridad sin orchestator). Con orchestator
+  arrancado, muestra de paridad (TechnicalRatings, broker modes, MACD,
+  Supertrend): 7/7 OK.
+- Ningún consumidor hereda de `Broker` (comprobado con grep): el abstracto
+  nuevo `list_symbols` no les afecta.
+
+---
+
+## GRAVE — `PollingMarketDataFeed` entregaba cada vela UN PERIODO TARDE (2026-10-18) — ARREGLADO
+
+`brokers/market_data/live_feed.py::PollingMarketDataFeed._poll_one` emitía
+`candles[-2]` suponiendo que la última vela devuelta "seguía formándose". Eso
+era verdad antes del arreglo del 2026-08-11 ("limit=N devolvía N-1 velas..."),
+que hizo que los proveedores DESCARTEN la vela en curso. Desde entonces
+`[-2]` era la ANTERIOR a la última cerrada.
+
+Verificado contra la API real (Binance y Bitunix, BTCUSDT 1m): a las
+05:30:52 UTC las velas devueltas eran 05:27, 05:28, 05:29 (todas cerradas) y
+el feed emitía la de las 05:28.
+
+**Quién lo sufría**: toda estrategia en vivo sobre polling -- en web-server
+(`marketdata/services.get_live_feed_for`) y en orchestator
+(`TradingFrameworkLiveFeedAdapter`) es TODO broker que no sea Binance (que va
+por WebSocket), o sea Bitunix. Con velas de 1h, cada decisión llegaba una
+hora tarde. Ninguno de los dos lo compensaba (comprobado con grep).
+
+**Arreglo**: emite la última vela con `is_closed=True`. Test de regresión
+`tests/test_polling_feed_latest_closed.py` (falla con el código viejo).
+
+⚠ **Llega a producción solo cuando se suba el commit fijado de la librería**
+en framework / web-server / orchestator. Al hacerlo, las estrategias de
+Bitunix empezarán a recibir las velas un periodo ANTES que hoy (lo correcto):
+avisar al equipo.
+
+## [2026-10-18] Fase 4 — infraestructura de streaming
+
+Diseño: `docs/plans/fase4_streaming.md`. Guía: `docs/guia/streaming.md`.
+
+- `run_with_reconnect`: solo reintenta errores de RED (`OSError`, que cubre
+  `requests.RequestException`, + `aiohttp.ClientError` + timeouts). Cualquier
+  otro error termina el stream -- a propósito: un `ValueError` por símbolo
+  inválido reintentado para siempre es un fallo silencioso.
+- El polling guarda su estado (marcas de agua de velas, órdenes conocidas)
+  FUERA de la sesión: una reconexión no reemite historia ni pierde órdenes.
+- `PollingOrderUpdateStream` nunca infiere `FILLED` por desaparición: pregunta
+  `get_order()` y, si falla, reintenta en la siguiente vuelta (avisando con el
+  motivo real cada `LOG_EVERY` fallos).
+- `websocket_session` termina cuando el servidor cierra (y
+  `run_with_reconnect` la reabre); con `stop` corta aunque el servidor no
+  mande nada (test con servidor aiohttp real que se queda mudo).
+- En los tests con servidor aiohttp local: si el handler se queda esperando,
+  `runner.cleanup()` espera a que acabe -- el handler debe terminar con un
+  evento que el test active ANTES del cleanup, o el test se cuelga.
+
+Verificación: 227 tests de la librería; en vivo, a través de `StreamRunner`,
+libros y velas de 1m de Binance spot y Bitunix futuros, y `websocket_session`
+contra el kline público de Binance (ver `docs/estado.md`).
+
+---
+
+## [2026-10-18] Fase 5 — WebSockets de Binance y Bitunix
+
+Código: `brokers/binance_streams.py`, `brokers/bitunix_streams.py`,
+`StreamingMarketDataFeed` en `live_feed.py`. Prueba real: `scripts/probar_streams.py`.
+
+### Binance futuros reparte sus streams por RUTA — y la equivocada se queda MUDA
+
+Comprobado contra `fstream.binance.com`: `kline` y `aggTrade` solo llegan por
+`/market/ws` o `/market/stream`; `depthN` por `/public/...` (y todavía por
+`/ws`). `wss://fstream.binance.com/ws/btcusdt@kline_1m` conecta bien y NO
+manda nada, sin error. Datos privados: `/private/ws/<listenKey>`.
+Spot sigue todo en `stream.binance.com:9443`.
+
+### Binance spot ya no tiene listenKey
+
+Retirado el 2026-02-20 (POST/PUT/DELETE `/api/v3/userDataStream`). El flujo de
+usuario va por la WebSocket API (`wss://ws-api.binance.com:443/ws-api/v3`) con
+`userDataStream.subscribe.signature`: params `apiKey`, `timestamp`,
+`recvWindow` firmados HMAC-SHA256 ordenados alfabéticamente (sirve cualquier
+tipo de clave). Los eventos llegan ENVUELTOS: `{"subscriptionId": 0, "event": {...}}`.
+En una cancelación, `c` es el id de la PETICIÓN de cancelar; el de la orden
+original va en `C`. Verificado en testnet: NEW, CANCELED, FILLED (precio de
+llenado `L`, medio = `Z`/`z`, comisión `n`/`N`).
+
+### GRAVE — reloj local desfasado: TODA orden de Binance salía REJECTED — ARREGLADO
+
+El reloj de esta máquina iba ~4,3 s ADELANTADO. Binance rechaza cualquier
+petición firmada con `timestamp` más de 1 s por delante (`-1021`). El stream
+privado fallaba y, peor, `place_order` devolvía `REJECTED` (python-binance
+firma con `time.time()`). Ahora `BinanceBroker` implementa `ServerClock` y en
+`__init__` llama a `sync_clock()`, que fija `client.timestamp_offset` con el
+desfase medido (si falla, avisa y sigue con el reloj local). El stream spot
+re-sincroniza en cada conexión. Efecto secundario: construir un
+`BinanceBroker` hace una petición más (`get_server_time`); la suite de
+web-server pasó de ~21 s a ~39 s por los tests que construyen brokers reales.
+
+⚠ Mirando timestamps en logs de ESTA máquina hay que restar ~4 s: las velas
+de Bitunix parecían llegar 5-6 s tarde y llegan ~1,3 s después del cierre
+(el `ts` del servidor lo delata).
+
+### Bitunix futuros SÍ tiene WebSocket privado de órdenes
+
+La nota de más arriba ("Bitunix no tiene stream de usuario") salió de mirar el
+SDK de PyPI, que solo cubre spot. Futuros tiene `wss://fapi.bitunix.com/private/`
+con login (`sha256(sha256(nonce+timestamp+apiKey)+secret)`, timestamp en
+SEGUNDOS) y canal `order`. Límite: 5 mensajes/s por conexión (pings
+incluidos) -> todas las suscripciones en UN mensaje.
+
+- Al conectar, Bitunix manda primero `{"op":"connect","data":{"result":true}}`.
+  NO es la respuesta al login: tomarla por ella daba por buena cualquier clave
+  (cazado con claves falsas). La respuesta real es `{"op":"login","data":{...,"result":false|true}}`.
+- ⚠ SIN VERIFICAR con cuenta real: `dealAmount` ("Deal amount") se toma como
+  cantidad ejecutada en base, como `tradeQty` en REST. Si fuera el importe en
+  USDT, `filled_qty` saldría multiplicado por el precio. Es lo primero que hay
+  que mirar en la prueba real.
+
+### Bitunix: el kline por WebSocket no dice cuándo cierra una vela
+
+Manda instantáneas cada 500 ms con `o/h/l/c/b/q` y un `ts`, sin hora de
+apertura ni flag de cierre. Sacar la vela cerrada de la última instantánea
+podría perder los trades de los últimos 500 ms. Solución: el WebSocket hace de
+DISPARADOR (cambia `ts // duración`) y la vela exacta se lee por REST (el REST
+la tiene al primer intento, verificado). 3d/1w/1M no tienen duración fija ->
+polling. El spot de Bitunix tiene otra API WebSocket (otro host), no
+implementada: spot va por polling (`native_stream_markets`).
+
+### `_iso_to_ms` desplazaba 4 horas — ARREGLADO antes de publicar
+
+Al recortar los 9 decimales de `2024-05-16T08:13:09.123456789Z`, juntaba también
+los dígitos de la zona (`+00:00`), perdía la zona y `datetime` lo interpretaba en
+hora local (UTC-4). Lo cazó el test con el valor calculado aparte.
+
+### Sin verificar todavía (no hay claves)
+
+- Binance futuros privado (`listenKey`, `ORDER_TRADE_UPDATE`). Además, la cuenta
+  tenía restricción geográfica en futuros.
+- URLs de testnet de futuros de Binance.
+- Canal `order` de Bitunix con una cuenta real (sí el login y su rechazo).
+
+---
+
+## [2026-10-18] Fase 6 — Kraken y Bitfinex (y lado librería de la Fase 7)
+
+Portados de luarix-arbitrage-web-server con su lógica INTACTA (traducción de
+activos, reglas, libro con checksum CRC-32, firma, comisiones, reloj por
+WebSocket) y sus tests con mensajes reales. Añadido para Luarix: velas REST y
+por WebSocket, precio, libro REST, pares, activos.
+
+- **Arbitraje ya tiene 9 conectores** (2026-10: Bybit, Gate, HTX, KuCoin, MEXC,
+  OKX además de Binance, Kraken, Bitfinex) y su contrato creció con
+  `fetch_assets` / `AssetListing` / `AssetNetworkInfo`. Lo que se mire de su
+  repo hay que releerlo: cambia rápido.
+- **Bitfinex, velas**: columnas `[MTS, OPEN, CLOSE, HIGH, LOW, VOLUME]` -- el
+  cierre va ANTES que el máximo. Test que comprueba `low <= open/close <= high`
+  con datos reales.
+- **Kraken, velas REST**: la última fila es la vela en curso; cerradas = las de
+  `time <= result["last"]`. Solo sirve las 720 más recientes por intervalo:
+  `get_historical_candles` levanta si `start` es anterior (no rango incompleto).
+- **Kraken/Bitfinex, WebSocket de velas**: mandan la vela en curso sin marca de
+  cierre. `streaming/candles.py::ClosedCandleEmitter`: WebSocket como disparador
+  + REST para la vela exacta + temporizador en cada frontera (en un par sin
+  operaciones el "periodo nuevo" solo llegaría con el siguiente trade). Bitunix
+  pasó a usarlo también (antes no tenía temporizador).
+- **Checksums**: necesitan los números como TEXTO exacto. `websocket_session`
+  acepta `loads=` (Kraken `parse_float=str`; Bitfinex además `parse_int=str`).
+- **Reloj de Kraken/Bitfinex**: devolvían 0 si en la ventana no llegaba ninguna
+  marca (pasa con Bitfinex tras muchas conexiones seguidas: límite por minuto).
+  Un 0 falsea TODAS las latencias (salía 4,4 s en vez de ~150 ms). Ahora se
+  conserva el último desfase medido, con aviso. Arbitraje tiene ese mismo
+  comportamiento (devuelve 0): conviene corregirlo allí también.
+- **Binance para arbitraje**: `public_only=True` en `create()` (datos públicos
+  sin claves). Latencia de spot por `miniTicker` en la misma conexión (el libro
+  parcial no trae hora), como hace arbitraje; futuros por `E` del libro
+  (`OrderBook.event_ms`). `FEES` con `/api/v3/account/commission` (descuento BNB
+  solo si activo en cuenta Y par) y `/fapi/v1/commissionRate`.
+- **`aio.AsyncExchange`**: la forma exacta del contrato async de arbitraje sobre
+  cualquier exchange de la librería. Probado con el motor real de arbitraje
+  (`scripts/probar_adaptador_arbitraje.py`): ciclos triangulares en Kraken,
+  Bitfinex y Binance, latencias medianas 109-134 ms.
+- **`pandas` perezoso en `Candle`**: importar capacidades, Kraken, Bitfinex o
+  `aio` ya no carga pandas (sigue siendo dependencia por el `PaperBroker`).
+- **Test intermitente** (1 vez de ~10): casi seguro
+  `test_credentials_and_factory.py::test_binance_si_respeta_testnet`, que construye un
+  `BinanceBroker` real (ping + hora del servidor por red).
+
+---
+
+## [2026-10-18] Los 6 conectores restantes de arbitraje (Bybit, OKX, Gate, HTX, KuCoin, MEXC)
+
+Portados de luarix-arbitrage-web-server con su lógica INTACTA a
+`luarix_exchange/exchanges/` sobre una base común (`_base.py::SpotConnector`:
+reglas cacheadas, reloj, libro por WebSocket con `run_with_reconnect`,
+comisiones, activos). Sus tests (`test_new_exchanges.py` de arbitraje) están en
+`tests/test_spot_connectors.py`.
+
+- **Binance `measure_order_roundtrip_ms`**: arbitraje firma con la hora LOCAL;
+  en esta máquina (reloj ~4,3 s adelantado) eso da -1021. La librería firma con
+  la hora de Binance (`sync_clock`). Verificado en testnet: ~210 ms.
+- **HTX, reloj**: su `/v1/common/timestamp` por REST da una estimación ~200 ms
+  peor que la del resto → latencias de ~320 ms en vez de ~100-170. Es el mismo
+  método que usa arbitraje (mismo problema allí). Mejora: estimarlo con las
+  marcas `ts` del WebSocket, como Kraken/Bitfinex.
+- **HTX, WebSocket**: mensajes gzip; el `ping` lo manda el SERVIDOR y hay que
+  responder `pong` con el mismo número — se usa el `ws` capturado en `on_open`.
+- **OKX, keepalive**: `"ping"`/`"pong"` en TEXTO plano, no JSON
+  (`websocket_session` acepta `keepalive` que devuelva `str`).
+- **MEXC**: WebSocket solo protobuf (lector mínimo `_common.protobuf_fields`,
+  sin depender de `protobuf`); 30 suscripciones por conexión → varias
+  conexiones; si cae una, se reabren todas.
+- **KuCoin**: hay que pedir un token (`bullet-public`) antes de cada conexión.
+- **Credenciales con passphrase**: OKX y KuCoin (`*_API_PASSPHRASE`); entornos
+  de pruebas `BYBIT_TESTNET_*` y `OKX_DEMO_*`.
+- **Sin verificar** (necesitan claves): comisiones de los seis y órdenes de
+  prueba de Bybit testnet / OKX demo.

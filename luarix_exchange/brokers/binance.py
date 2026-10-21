@@ -1,19 +1,97 @@
 import decimal
+import hashlib
+import hmac
 import math
 from dataclasses import dataclass, field
+from typing import Any
 from uuid import uuid4
 
 from binance import Client
 from binance.exceptions import BinanceAPIException, BinanceOrderException
 
-from luarix_exchange.models.brokers import BrokerPosition
+import logging
+
+from luarix_exchange.capabilities import (
+    AccountSummarySource,
+    Fees,
+    FundingHistory,
+    IncomeHistory,
+    OrderRoundtripProbe,
+    ServerClock,
+    SymbolRulesSource,
+)
+from luarix_exchange.models.account import FundingMovement, IncomeEntry
+from luarix_exchange.models.fees import CommissionRates
+from luarix_exchange.models.book import OrderBook
+from luarix_exchange.models.brokers import BrokerPosition, Market
+from luarix_exchange.models.rules import SymbolRules
 from luarix_exchange.models.orders import (
     Entry, Fill, OrderAck, OrderInfo, OrderRequest, OrderStatus, OrderType, TimeInForce,
 )
 from luarix_exchange.models.orders import Side
 from luarix_exchange.brokers.account_data.binance import BinanceAccountDataProvider
 from luarix_exchange.brokers.base import Broker
+from luarix_exchange.brokers.binance_streams import BinanceStreamsMixin
+from luarix_exchange.brokers.credentials import BrokerCredentials, resolve_credentials
 from luarix_exchange.brokers.market_data.binance import BinanceMarketDataProvider
+
+
+def parse_spot_commission(data: dict) -> CommissionRates:
+    """GET /api/v3/account/commission (igual que en luarix-arbitrage-web-server).
+    El descuento (pagar en BNB) solo cuenta si está activo para la cuenta Y
+    para el par."""
+    std = data["standardCommission"]
+    disc = data.get("discount") or {}
+    descuento = None
+    if disc.get("enabledForAccount") and disc.get("enabledForSymbol") and disc.get("discount") is not None:
+        descuento = decimal.Decimal(str(disc["discount"]))
+    return CommissionRates(symbol=data["symbol"], maker=decimal.Decimal(str(std["maker"])),
+                           taker=decimal.Decimal(str(std["taker"])), discount=descuento)
+
+
+TESTNET_REST_BASE = "https://testnet.binance.vision"
+
+
+def lowest_allowed_bid_multiplier(info: dict) -> decimal.Decimal:
+    """Binance rechaza compras demasiado por debajo del precio (filtro
+    PERCENT_PRICE_BY_SIDE, `bidMultiplierDown`; 0.2 = hasta un 80 % por debajo).
+    0.5 si el par no lo declara. (De luarix-arbitrage-web-server.)"""
+    for f in info.get("filters", []):
+        if f.get("filterType") == "PERCENT_PRICE_BY_SIDE" and f.get("bidMultiplierDown"):
+            return decimal.Decimal(str(f["bidMultiplierDown"]))
+    return decimal.Decimal("0.5")
+
+
+def far_limit_order(price: decimal.Decimal, rules: "SymbolRules", min_multiplier: decimal.Decimal = decimal.Decimal("0.5")):
+    """(precio, cantidad) de una compra límite que NO se ejecuta: lo más lejos del
+    precio que Binance admite (+5 % de margen de redondeo), con la cantidad
+    mínima que supera el notional mínimo. Solo para medir ida y vuelta."""
+    objetivo = price * min_multiplier * decimal.Decimal("1.05")
+    limite = (objetivo / rules.tick_size).to_integral_value(decimal.ROUND_UP) * rules.tick_size
+    qty = ((rules.min_notional * decimal.Decimal("1.2") / limite) / rules.step_size).to_integral_value(decimal.ROUND_UP) * rules.step_size
+    return limite, max(qty, rules.min_qty)
+
+
+def rules_from_binance_symbol(info: dict, market: Market | str) -> SymbolRules:
+    """`SymbolRules` desde una entrada de `exchangeInfo["symbols"]` (spot o
+    USDT-M futuros: los dos usan los filtros `LOT_SIZE`, `PRICE_FILTER` y
+    `NOTIONAL`/`MIN_NOTIONAL`, con el importe mínimo en `minNotional` en spot
+    y en `notional` en futuros)."""
+    filtros = {f.get("filterType"): f for f in info.get("filters", [])}
+    lot = filtros.get("LOT_SIZE", {})
+    price = filtros.get("PRICE_FILTER", {})
+    notional = filtros.get("NOTIONAL") or filtros.get("MIN_NOTIONAL") or {}
+    return SymbolRules(
+        symbol=info["symbol"],
+        base=info.get("baseAsset", ""),
+        quote=info.get("quoteAsset", ""),
+        step_size=decimal.Decimal(str(lot.get("stepSize", "0"))),
+        tick_size=decimal.Decimal(str(price.get("tickSize", "0"))),
+        min_qty=decimal.Decimal(str(lot.get("minQty", "0"))),
+        min_notional=decimal.Decimal(str(notional.get("minNotional") or notional.get("notional") or "0")),
+        market=Market(market),
+        raw=info,
+    )
 
 
 @dataclass
@@ -33,7 +111,17 @@ class SymbolFilters:
     min_notional: float = 10.0
 
 
-class BinanceBroker(Broker):
+class BinanceBroker(
+    Broker,
+    SymbolRulesSource,
+    ServerClock,
+    Fees,
+    OrderRoundtripProbe,
+    AccountSummarySource,
+    FundingHistory,
+    IncomeHistory,
+    BinanceStreamsMixin,
+):
     """Broker que conecta el framework con la API de Binance.
 
     Maneja tres modos de operación controlados por las variables de entorno:
@@ -45,11 +133,39 @@ class BinanceBroker(Broker):
     de Binance sin ejecutarla realmente (útil para verificar parámetros).
     """
 
+    name = "binance"
+    label = "Binance"
+    # OCO nativo (NativeOco, heredado de Broker): `place_oco_order` usa el
+    # endpoint real de Binance y es el exchange quien cancela la pierna que
+    # no se ejecutó. `supports_oco`/`supports_futures` se derivan de esto.
+    markets = frozenset({Market.SPOT, Market.FUTURES})
     supports_independent_orders = True
-    # OCO nativo: `place_oco_order` más abajo usa el endpoint real de Binance
-    # y es el exchange quien cancela la pierna que no se ejecutó.
-    supports_oco = True
-    supports_futures = True
+
+    @classmethod
+    def create(
+        cls,
+        credentials: BrokerCredentials | None = None,
+        testnet: bool | None = True,
+        test_order: bool = True,
+        trading_mode: str = "testnet",
+        allow_live_trading: bool = False,
+        public_only: bool = False,
+    ) -> "BinanceBroker":
+        """Lo que usa la factory: resuelve las credenciales (las pasadas o
+        las del entorno) y elige las de testnet o producción según `testnet`."""
+        if public_only and not credentials and not BrokerCredentials.from_env("BINANCE"):
+            # Solo datos públicos (velas, libros, reglas): no hacen falta claves.
+            api_key, api_secret = "", ""
+        else:
+            api_key, api_secret = resolve_credentials("BINANCE", credentials).resolve(bool(testnet))
+        return cls(
+            api_key=api_key,
+            api_secret=api_secret,
+            testnet=bool(testnet),
+            test_order=test_order,
+            trading_mode=trading_mode,
+            allow_live_trading=allow_live_trading,
+        )
 
     def __init__(
         self,
@@ -83,10 +199,93 @@ class BinanceBroker(Broker):
         self.account_data_provider = BinanceAccountDataProvider(client=self.client)
         # Caché de filtros por símbolo para evitar llamadas repetidas a la API
         self._filters_cache: dict[str, SymbolFilters] = {}
+        # Caché de `get_symbol_rules` por mercado (una llamada a exchangeInfo).
+        self._rules_cache: dict[Market, dict[str, SymbolRules]] = {}
+        self.sync_clock()
 
     def connect(self) -> None:
         """Verifica que la conexión con Binance está activa (ping)."""
         self.client.ping()
+
+    def get_commissions(self, symbols: list[str], market: str = "spot") -> dict[str, CommissionRates]:
+        """Comisión real de la cuenta por par (claves de solo lectura bastan).
+        Spot: /api/v3/account/commission; futuros: /fapi/v1/commissionRate."""
+        tasas = {}
+        for symbol in symbols:
+            if Market(market) is Market.FUTURES:
+                d = self._client().futures_commission_rate(symbol=symbol)
+                tasas[symbol] = CommissionRates(symbol=symbol, maker=decimal.Decimal(str(d["makerCommissionRate"])),
+                                                taker=decimal.Decimal(str(d["takerCommissionRate"])))
+            else:
+                tasas[symbol] = parse_spot_commission(self._client().v3_get_account_commission(symbol=symbol))
+        return tasas
+
+    def measure_order_roundtrip_ms(self, credentials: Any, samples: int = 8, symbol: str = "BTCUSDT") -> list[int]:
+        """En la TESTNET de spot: coloca `samples` compras límite lejos del precio
+        y las cancela, midiendo cada ida y vuelta (REST directo, sin python-binance,
+        para no medir su sobrecarga). `credentials`: claves de TESTNET.
+
+        Firma con la hora de Binance (`/api/v3/time`): con la local, un reloj
+        adelantado >1 s hace fallar todo con -1021 (le pasaría al original de
+        luarix-arbitrage-web-server en una máquina así)."""
+        import time as _time
+
+        import requests
+
+        http, base = requests.Session(), TESTNET_REST_BASE
+        cabeceras = {"X-MBX-APIKEY": credentials.api_key}
+        info = http.get(f"{base}/api/v3/exchangeInfo", params={"symbol": symbol}, timeout=15).json()["symbols"][0]
+        reglas = rules_from_binance_symbol(info, Market.SPOT)
+        precio = decimal.Decimal(http.get(f"{base}/api/v3/ticker/price", params={"symbol": symbol}, timeout=15).json()["price"])
+        limite, qty = far_limit_order(precio, reglas, lowest_allowed_bid_multiplier(info))
+        antes = _time.time() * 1000
+        servidor = http.get(f"{base}/api/v3/time", timeout=15).json()["serverTime"]
+        desfase = int(servidor - (antes + _time.time() * 1000) / 2)
+
+        def firmada(metodo: str, ruta: str, consulta: str) -> dict:
+            consulta = f"{consulta}&recvWindow=5000&timestamp={int(_time.time() * 1000) + desfase}"
+            firma = hmac.new(credentials.api_secret.encode(), consulta.encode(), hashlib.sha256).hexdigest()
+            resp = http.request(metodo, f"{base}{ruta}?{consulta}&signature={firma}", headers=cabeceras, timeout=15)
+            data = resp.json()
+            if resp.status_code != 200:
+                raise RuntimeError(f"Binance testnet {resp.status_code}: {data.get('msg', data)}")
+            return data
+
+        http.get(f"{base}/api/v3/ping", timeout=15)  # abre la conexión: la 1ª medida no paga el TLS
+        tiempos: list[int] = []
+        for _ in range(samples):
+            orden = f"symbol={symbol}&side=BUY&type=LIMIT&timeInForce=GTC&quantity={qty}&price={limite}&newOrderRespType=ACK"
+            inicio = _time.time()
+            colocada = firmada("POST", "/api/v3/order", orden)
+            tiempos.append(int((_time.time() - inicio) * 1000))
+            firmada("DELETE", "/api/v3/order", f"symbol={symbol}&orderId={colocada['orderId']}")
+            _time.sleep(0.2)
+        logging.getLogger(__name__).info("Binance testnet: %d órdenes de prueba, ida y vuelta %s ms", samples, tiempos)
+        return tiempos
+
+    def server_time_ms(self) -> int:
+        return int(self._client().get_server_time()["serverTime"])
+
+    def sync_clock(self) -> int | None:
+        """Alinea las firmas con el reloj de BINANCE, no con el local.
+
+        Binance rechaza toda petición firmada cuyo `timestamp` vaya más de
+        1 s por delante de su reloj (`-1021 Timestamp for this request was
+        1000ms ahead of the server's time`). Un PC con Windows desfasado ~1 s
+        bastaba para que TODA orden saliera `REJECTED` -- encontrado probando
+        en testnet el 2026-10-18. python-binance suma `timestamp_offset` a
+        cada firma; aquí se fija con la diferencia medida. Si la consulta
+        falla, se avisa y se sigue con el reloj local (no se impide construir
+        el broker sin red)."""
+        try:
+            desfase = self.clock_offset_ms()
+        except Exception as exc:  # noqa: BLE001 -- sin red al construir: no es fatal
+            logging.getLogger(__name__).warning(
+                "binance: no se pudo medir el desfase de reloj (%s: %s); se firma con la hora local",
+                type(exc).__name__, exc)
+            return None
+        self.client.timestamp_offset = desfase
+        return desfase
 
     def _client(self) -> Client:
         """Devuelve el cliente de Binance, inicializando la conexión si es necesario."""
@@ -98,9 +297,29 @@ class BinanceBroker(Broker):
     # General endpoints
     # ─────────────────────────────────────────────
 
-    def list_active(self):
-        exchange_info = self.client.get_exchange_info()
-        return [symbol["symbol"] for symbol in exchange_info["symbols"]]
+    def _exchange_info(self, market: str) -> dict:
+        if Market(market) is Market.FUTURES:
+            return self._client().futures_exchange_info()
+        return self._client().get_exchange_info()
+
+    def list_symbols(self, market: str = "spot") -> list[str]:
+        """Los pares en estado TRADING del mercado pedido."""
+        return [s["symbol"] for s in self._exchange_info(market).get("symbols", [])
+                if s.get("status") == "TRADING"]
+
+    def get_symbol_rules(self, market: str = "spot") -> dict[str, SymbolRules]:
+        """Reglas de todos los pares en TRADING, cacheadas por mercado (una
+        sola llamada a exchangeInfo). Spot y futuros tienen reglas DISTINTAS
+        para el mismo par."""
+        mercado = Market(market)
+        cache = self.__dict__.setdefault("_rules_cache", {})
+        if mercado not in cache:
+            cache[mercado] = {
+                s["symbol"]: rules_from_binance_symbol(s, mercado)
+                for s in self._exchange_info(mercado).get("symbols", [])
+                if s.get("status") == "TRADING"
+            }
+        return cache[mercado]
 
     # ─────────────────────────────────────────────
     # Market data (minimal — only what the strategy needs)
@@ -110,9 +329,14 @@ class BinanceBroker(Broker):
         """Devuelve el último precio de mercado para el símbolo indicado."""
         return self.market_data_provider.get_last_price(symbol, market=market)
 
-    def get_order_book(self, symbol: str, limit: int = 20, market: str = "spot") -> dict:
-        """Devuelve el order book (bids y asks) para el símbolo indicado."""
-        return self.market_data_provider.get_order_book(symbol, limit, market=market)
+    def get_order_book(self, symbol: str, limit: int = 20, market: str = "spot") -> OrderBook:
+        """Libro normalizado. Binance manda `[[precio, cantidad], ...]` en texto
+        y `lastUpdateId` como número de secuencia, igual en spot y futuros."""
+        raw = self.market_data_provider.get_order_book(symbol, limit, market=market)
+        return OrderBook.from_levels(
+            symbol, market, raw.get("bids", []), raw.get("asks", []),
+            depth=limit, update_id=raw.get("lastUpdateId"), raw=raw,
+        )
 
     # ─────────────────────────────────────────────
     # Account data
@@ -121,6 +345,28 @@ class BinanceBroker(Broker):
     def get_balance(self, market: str = "spot", asset: str | None = None) -> dict[str, float]:
         """Saldo disponible por activo en el mercado pedido ("spot"/"futures")."""
         return self.account_data_provider.get_balance(market, asset)
+
+    # ── Historial de cuenta (portafolio) ────────────────────────────────
+
+    def _require_mainnet(self, que: str) -> None:
+        # `/sapi` (depósitos, retiros) no existe en el testnet de spot: la
+        # llamada daría 404. Mejor decirlo con nombre propio.
+        if self.testnet:
+            raise NotImplementedError(f"El testnet de Binance no tiene {que}.")
+
+    def get_deposits(self, start, end) -> list[FundingMovement]:
+        self._require_mainnet("historial de depósitos")
+        crudos = self.account_data_provider.get_deposits(start, end)
+        return sorted((FundingMovement.from_binance_deposit(r) for r in crudos), key=lambda m: m.timestamp)
+
+    def get_withdrawals(self, start, end) -> list[FundingMovement]:
+        self._require_mainnet("historial de retiros")
+        crudos = self.account_data_provider.get_withdrawals(start, end)
+        return sorted((FundingMovement.from_binance_withdrawal(r) for r in crudos), key=lambda m: m.timestamp)
+
+    def get_income(self, start, end) -> list[IncomeEntry]:
+        crudos = self.account_data_provider.get_income(start, end)
+        return sorted((IncomeEntry.from_binance(r) for r in crudos), key=lambda e: e.timestamp)
 
     def get_positions(self, market: str = "spot", symbol: str | None = None) -> list[BrokerPosition]:
         """Posiciones abiertas.

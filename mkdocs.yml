@@ -81,14 +81,21 @@ nav:
       - Balance y posiciones: guia/balance-y-posiciones.md
       - Órdenes: guia/ordenes.md
       - Take profit y stop loss: guia/tp-sl.md
+      - Streaming en vivo: guia/streaming.md
       - Errores y diagnóstico: guia/errores.md
+      - Añadir un exchange: guia/nuevo-exchange.md
   - Brokers:
       - Binance: brokers/binance.md
       - Bitunix: brokers/bitunix.md
       - PaperBroker: brokers/paper.md
       - MetaTrader 5: brokers/mt5.md
+      - Kraken: brokers/kraken.md
+      - Bitfinex: brokers/bitfinex.md
+      - Bybit, OKX, Gate, HTX, KuCoin, MEXC: brokers/conectores-spot.md
   - Integración:
       - Guía de migración: integracion/migracion.md
+      - luarix-arbitrage-web-server: integracion/arbitraje.md
   - Referencia:
       - Contrato Broker: referencia/broker.md
+      - Capacidades: referencia/capacidades.md
   - Estado y limitaciones: estado.md

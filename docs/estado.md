@@ -26,6 +26,69 @@ Comprobado en vivo el 2026-08-11, sin credenciales (endpoints públicos):
   bitunix futures  -> 5 velas, ultima 14:00 close=63747.0
   ```
 
+Comprobado en vivo el 2026-10-16 (Fase 3), sin credenciales:
+
+- **`get_order_book` normalizado**, los cuatro caminos (Binance spot/futuros,
+  Bitunix spot/futuros): libros ordenados y con niveles.
+- **`get_symbol_rules`** en los cuatro: los precios reales del libro son
+  múltiplos exactos del `tick_size` calculado (lo que valida la lectura de
+  `basePrecision`/`quotePrecision` de Bitunix como número de decimales).
+- **`list_symbols`** en los cuatro (Binance 1380 spot / 793 futuros; Bitunix
+  545 / 781 ese día).
+- El libro de **spot de Bitunix salía VACÍO**: se pedía `precision=2` y la API
+  respondía `success` con listas vacías. Arreglado (ver `docs/plans/bugs.md`).
+
+Comprobado en vivo el 2026-10-18 (Fase 4, streaming por polling), sin
+credenciales, a través del puente síncrono (`StreamRunner`):
+
+- Libros de Binance spot y Bitunix futuros: ~15 cambios del top-5 en 19 s,
+  siempre ordenados.
+- Velas de 1m de Binance spot y Bitunix futuros: la vela de las 05:36 llegó a
+  las 05:37:04-05 (sondeo cada 5 s), en su minuto.
+- `websocket_session` contra el kline público de Binance.
+- **`PollingMarketDataFeed` iba una vela tarde** (emitía la penúltima vela
+  cerrada). Arreglado; ver `docs/plans/bugs.md`.
+
+Comprobado en vivo el 2026-10-18 (Bybit, OKX, Gate, HTX, KuCoin y MEXC,
+portados de arbitraje), sin claves:
+
+- Reglas completas en los seis (527-2201 pares), libros por WebSocket sin un
+  solo libro inválido, latencias medianas 102-168 ms (HTX ~320 ms por su reloj).
+- Activos con redes: Gate 3015, HTX 1169, KuCoin 2167.
+- El motor de arbitraje evaluó ciclos triangulares en los 9 exchanges.
+- `measure_order_roundtrip_ms` de Binance en testnet (4 órdenes, ~210 ms).
+- Sin verificar: comisiones de los seis y órdenes de prueba de Bybit/OKX (claves).
+
+Comprobado en vivo el 2026-10-18 (Fase 6, Kraken y Bitfinex), sin claves:
+
+- **Kraken**: 1365 pares, reglas, precio, libro y velas REST (solo cerradas,
+  según `last`), 857 activos con su estado; 2429 libros por WebSocket con el
+  checksum verificado en todos; velas cerradas por WebSocket en su minuto.
+- **Bitfinex**: 180 pares, precio, libro, velas REST (columnas O/C/H/L
+  comprobadas), histórico paginado de 500 días (11.991 velas de 1h); 2400
+  libros por WebSocket con checksum; velas cerradas por WebSocket.
+- **Reloj**: Kraken, Bitfinex y Binance midieron los tres ~−4,3 s (el desfase
+  real de la máquina de pruebas): las tres estimaciones coinciden.
+- **Arbitraje**: su motor evaluó ciclos triangulares sobre libros de la
+  librería (Kraken, Bitfinex, Binance), latencias medianas 109-134 ms.
+- **Comisiones de Binance**: `/api/v3/account/commission` en testnet.
+- Sin verificar: comisiones de Kraken y Bitfinex (necesitan claves).
+
+Comprobado en vivo el 2026-10-18 (Fase 5, WebSockets):
+
+- **Binance**, spot y futuros: velas cerradas (`kline`, `x=true`) y libro
+  parcial por WebSocket. Futuros reparte sus rutas: velas en `/market/`, libro
+  en `/public/`; la ruta clásica `/ws/` deja MUDO el kline.
+- **Binance spot, órdenes** (testnet, claves del `.env`): suscripción firmada
+  aceptada y eventos NEW, CANCELED y FILLED con cantidad, precio de llenado,
+  precio medio y comisión correctos.
+- **Bitunix futuros**: velas (WebSocket como disparador + REST) ~1,5 s tras el
+  cierre, y libro `depth_book5` por WebSocket. Login privado con claves falsas:
+  rechazado con su motivo real y el stream se detiene (`StreamAuthError`).
+- **Sin verificar**: Binance futuros privado (sin claves de futuros) y el canal
+  `order` de Bitunix con una cuenta real (sin claves). Usa
+  `scripts/probar_streams.py --privado`.
+
 Verificado en sesiones anteriores contra la cuenta real de Bitunix:
 
 - La **firma** de `BitunixFuturesClient` (GET y POST).
@@ -63,6 +126,21 @@ Verificado en sesiones anteriores contra la cuenta real de Bitunix:
     por Bitunix pero **no se han ejercitado contra la cuenta real** — hacen
     falta las API keys.
 
+!!! warning "Saldo valorado, depósitos e income (Fase 9, 2026-10-19)"
+    `get_account_summary`, `get_deposits`, `get_withdrawals` y `get_income`
+    están probados solo con clientes falsos (`tests/test_account_summary.py`).
+    Desde la máquina de desarrollo no se pudo ejercitar ninguno: Binance
+    responde *"Service unavailable from a restricted location"* y Bitunix
+    `10004 Invalid IP` (la IP no está en la whitelist de la key).
+
+    - Bitunix futuros: `free = available`, `locked = frozen + margin`,
+      no realizado `= crossUnrealizedPNL + isolationUnrealizedPNL`. Sale de
+      la documentación; confirmar con una cuenta con posiciones abiertas.
+    - `/api/spot/v1/common/rate/list` de Bitunix SÍ verificado (público,
+      2026-10-19): ~880 pares contra USDT en una llamada.
+    - Income de Binance se pide en tramos de 7 días por prudencia (no está
+      confirmado cuál es la ventana máxima de `/fapi/v1/income`).
+
 !!! warning "Los nombres de campo de `pending_positions`"
     `qty`, `side`, `avgOpenPrice`, `markPrice`, `unrealizedPNL`, `positionId`,
     `marginMode` salen de la documentación.
@@ -84,7 +162,7 @@ Verificado en sesiones anteriores contra la cuenta real de Bitunix:
 | **Sin tipos de stop en futuros** | Solo `LIMIT` y `MARKET`. El stop va adjunto |
 | **Spot no lista todas las órdenes** | Su endpoint exige símbolo. `get_open_orders(market="spot")` levanta |
 | **Kline de spot sin rango** | Devuelve siempre ~201 velas. El histórico sale del kline de **futuros** (precios de perpetuo) |
-| **Libro de futuros sin implementar** | `NotImplementedError`: endpoint no verificado |
+| **Libro de futuros: `limit` solo 1, 5, 15 o 50** | Se pide el menor que cubre lo pedido y se recorta (verificado 2026-10-16) |
 | **Saldo de futuros por moneda de margen** | Una llamada por moneda |
 | **Intervalos desconocidos en spot caen a 1h** | En silencio. Comportamiento heredado |
 
@@ -94,7 +172,7 @@ Verificado en sesiones anteriores contra la cuenta real de Bitunix:
 |---|---|
 | **Modo cobertura sin soporte** | En hedge exige `positionSide` en vez de `reduceOnly`, y el broker no lee el modo de la cuenta |
 | **`_futures_symbol_filters` sin caché** | Una llamada a `futures_exchange_info()` por orden |
-| **`start_user_socket` comentado** | Sin push de estado de órdenes |
+| **`start_user_socket` comentado** | Sustituido por `stream_order_updates` (Fase 5) |
 | **`test_order=True` no aplica a futuros** | |
 | **`update_order` en spot cancela y recoloca** | El `order_id` cambia y no es atómico |
 
@@ -119,11 +197,21 @@ Verificado en sesiones anteriores contra la cuenta real de Bitunix:
 
 ---
 
-## Ningún broker empuja estado de órdenes
+## Push de estado de órdenes
 
-!!! danger "Hay que PREGUNTAR"
-    - Bitunix **no tiene** stream de datos de usuario.
-    - El `start_user_socket` de Binance está **comentado**.
+!!! success "Desde la Fase 5 (2026-10-18) SÍ hay push de órdenes"
+    - **Binance spot**: WebSocket API (`userDataStream.subscribe.signature`),
+      verificado de extremo a extremo en testnet (NEW, CANCELED, llenados).
+    - **Binance futuros**: `listenKey` + `/private/ws/` (implementado, sin
+      verificar contra cuenta real).
+    - **Bitunix futuros**: canal privado `order` (implementado; login y su
+      rechazo verificados; falta probarlo con una cuenta real).
+    - **Bitunix spot**: sigue sin push; polling (`PollingOrderUpdateStream`).
+
+    Ver [Streaming en vivo](guia/streaming.md). El `start_user_socket` de
+    python-binance sigue comentado: ya no hace falta.
+
+!!! danger "Sin stream (Bitunix spot, o antes de la Fase 5): hay que PREGUNTAR"
 
     Consecuencia: una orden colocada y luego cancelada a mano en la app del
     exchange se queda como `NEW` para siempre en cualquier sistema que espere un

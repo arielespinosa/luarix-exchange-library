@@ -214,12 +214,18 @@ ws.on_kline = lambda msg: print(msg)
 ws.start()
 ```
 
-!!! warning "El stream de USUARIO está comentado"
-    `start_user_socket` está comentado en el código. Consecuencia: **Binance no
-    empuja cambios de estado de órdenes** en este paquete. Hay que preguntar con
-    `get_order_status()`.
+!!! success "Órdenes por WebSocket desde la Fase 5"
+    `stream_order_updates(on_update, stop, market)`: en spot por la WebSocket
+    API (`userDataStream.subscribe.signature`; Binance retiró el `listenKey`
+    de spot el 2026-02-20), en futuros por `listenKey`. Ver
+    [Streaming en vivo](../guia/streaming.md). El `start_user_socket` de
+    python-binance sigue comentado y ya no hace falta.
 
-    Es el motivo de que exista todo el aparato de reconciliación por sondeo.
+!!! info "Reloj sincronizado con Binance"
+    `BinanceBroker` mide al construirse el desfase con el reloj de Binance y lo
+    aplica a toda firma (`client.timestamp_offset`). Sin esto, un PC con el
+    reloj adelantado más de 1 s veía TODAS sus órdenes `REJECTED`
+    (`-1021`). `broker.sync_clock()` lo vuelve a medir.
 
 ---
 
@@ -228,7 +234,7 @@ ws.start()
 - Todo el camino de **futuros sin validar** contra la API real.
 - **Modo cobertura** sin soporte (`positionSide`).
 - `_futures_symbol_filters` **no cachea**: una llamada por orden.
-- `start_user_socket` comentado: sin push de estado de órdenes.
+- Órdenes de **futuros** por WebSocket sin verificar contra cuenta real.
 - `update_order` en **spot** cancela y recoloca → el `order_id` cambia y no es
   atómico.
 - `test_order=True` no aplica a futuros.

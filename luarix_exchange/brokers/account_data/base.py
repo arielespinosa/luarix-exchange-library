@@ -1,4 +1,7 @@
 from abc import ABC, abstractmethod
+from datetime import datetime
+
+from luarix_exchange.models.account import BalanceRow
 
 
 class AccountDataProvider(ABC):
@@ -86,3 +89,33 @@ class AccountDataProvider(ABC):
     def set_leverage(self, symbol: str, leverage: int, market: str = "futures") -> dict:
         """Apalancamiento de un par en la cuenta de derivados."""
         raise NotImplementedError(f"{type(self).__name__} no tiene cuenta de futuros.")
+
+    # ── Portafolio (ver `models/account.py`) ────────────────────────────
+    # A diferencia del resto de esta clase, `get_balance_rows` NO devuelve el
+    # JSON crudo: devuelve `BalanceRow`, con nombres comunes. Los dos exchanges
+    # describen el saldo con formas tan distintas (lista de activos en Binance,
+    # una consulta por moneda de margen en los futuros de Bitunix) que no hay
+    # una capa de arriba que pueda normalizarlos sin volver a saber de quién
+    # vienen. El crudo de cada fila sigue en `BalanceRow.raw`.
+
+    def get_balance_rows(self, market: str = "spot") -> list[BalanceRow]:
+        """Saldo TOTAL (libre + bloqueado) por activo, solo los distintos de
+        cero. En futuros, con el no realizado de cada activo de margen."""
+        raise NotImplementedError(f"{type(self).__name__} no sabe leer el saldo completo.")
+
+    def get_usdt_prices(self) -> dict[str, float]:
+        """`{activo: precio en USDT}` de todo lo que el exchange cotice contra
+        USDT, en UNA llamada. Sirve para valorar el saldo entero."""
+        raise NotImplementedError(f"{type(self).__name__} no sabe dar precios en USDT en bloque.")
+
+    def get_deposits(self, start: datetime, end: datetime) -> list[dict]:
+        """Depósitos crudos en `[start, end]`."""
+        raise NotImplementedError(f"{type(self).__name__} no expone el historial de depósitos.")
+
+    def get_withdrawals(self, start: datetime, end: datetime) -> list[dict]:
+        """Retiros crudos en `[start, end]`."""
+        raise NotImplementedError(f"{type(self).__name__} no expone el historial de retiros.")
+
+    def get_income(self, start: datetime, end: datetime) -> list[dict]:
+        """Apuntes crudos del libro de futuros en `[start, end]`."""
+        raise NotImplementedError(f"{type(self).__name__} no expone el libro de futuros.")

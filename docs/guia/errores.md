@@ -133,7 +133,7 @@ Un broker que no sabe hacer algo. Nunca devuelve vacío — ver
 | `Bitunix no tiene OCO nativo...` | Usa `tp_price`/`sl_price` adjuntos |
 | `MT5Broker.update_order todavía no sabe modificar...` | Sin argumentos, cancela |
 | `El apalancamiento solo existe en la cuenta de futuros.` | `market="spot"` |
-| `El libro de órdenes de los futuros de Bitunix no está implementado` | Endpoint sin verificar |
+| `El Paper Broker no tiene libro de órdenes...` | El simulador llena contra el rango de cada vela; no hay libro |
 
 ---
 
@@ -210,9 +210,16 @@ a 45.30, TP en 45.53). Comprueba que para un `SELL` se cumple
 
 ### "El estado de la orden se quedó congelado en NEW"
 
-Los brokers reales **no empujan** cambios de estado: Bitunix no tiene stream de
-usuario y el `start_user_socket` de Binance está comentado. Hay que **preguntar**
-con `get_order_status()` periódicamente.
+Si no estás usando `stream_order_updates` (Fase 5), nadie te avisa de los
+cambios: hay que **preguntar** con `get_order_status()` periódicamente. Bitunix
+spot no tiene stream: ahí siempre es así (o `PollingOrderUpdateStream`).
+
+### `StreamAuthError` en un stream privado
+
+El exchange rechazó el login o la suscripción: clave inválida, IP fuera de la
+whitelist (Bitunix) o reloj desfasado (Binance `-1021`). El stream se detiene a
+propósito: reintentar no lo arregla y Bitunix puede bloquear la IP. El mensaje
+trae el motivo literal del exchange.
 
 ---
 

@@ -71,14 +71,14 @@ instrumento es lo que es.
 | Operación | Notas |
 |---|---|
 | `connect` | `mt5.initialize` + `mt5.login` |
-| `list_active` | `mt5.symbols_get()` |
+| `list_symbols` | `mt5.symbols_get()` |
 | `get_ticker` | Punto medio `(ask + bid) / 2` |
 | `get_balance(market, asset)` | Una sola cuenta, expuesta como `{"USDT": balance}` |
 | `get_positions(market, symbol)` | `mt5.positions_get()` → `list[BrokerPosition]` |
 | `place_order` | |
 | `cancel_order` | |
 | `place_oco_order` | SL/TP sobre la **posición**, no dos órdenes |
-| `get_order_book` | Devuelve `{}` |
+| `get_order_book` | Levanta `NotImplementedError` (antes devolvía `{}`) |
 
 ### Posiciones
 

@@ -1,6 +1,9 @@
+from datetime import datetime, timedelta
+
 from binance import Client
 
 from luarix_exchange.brokers.account_data.base import AccountDataProvider
+from luarix_exchange.models.account import QUOTE_ASSET, BalanceRow
 
 
 class BinanceAccountDataProvider(AccountDataProvider):
@@ -99,6 +102,94 @@ class BinanceAccountDataProvider(AccountDataProvider):
         if market != "futures":
             raise NotImplementedError("El apalancamiento solo existe en la cuenta de futuros.")
         return dict(self.client.futures_change_leverage(symbol=symbol, leverage=int(leverage)))
+
+
+    # ── Portafolio ──────────────────────────────────────────────────────
+
+    def get_balance_rows(self, market: str = "spot") -> list[BalanceRow]:
+        if market == "futures":
+            # `futures_account` y no `futures_account_balance`: el primero trae
+            # por activo `walletBalance` (total), `availableBalance` y
+            # `unrealizedProfit` en la misma respuesta.
+            filas = []
+            for item in self.client.futures_account().get("assets", []):
+                wallet = float(item.get("walletBalance") or 0)
+                unrealized = float(item.get("unrealizedProfit") or 0)
+                if wallet == 0 and unrealized == 0:
+                    continue
+                # Con PnL no realizado a favor, `availableBalance` puede
+                # SUPERAR al `walletBalance` (Binance deja usar esa ganancia
+                # como margen). Se acota: lo libre nunca es más que lo que hay,
+                # y la ganancia ya cuenta aparte, en `unrealized_pnl`.
+                free = min(max(float(item.get("availableBalance") or 0), 0.0), max(wallet, 0.0))
+                filas.append(BalanceRow(str(item["asset"]), free, wallet - free, unrealized, raw=item))
+            return filas
+
+        filas = []
+        for item in self.client.get_account().get("balances", []):
+            free, locked = float(item.get("free") or 0), float(item.get("locked") or 0)
+            if free + locked > 0:
+                filas.append(BalanceRow(str(item["asset"]), free, locked, raw=item))
+        return filas
+
+    def get_usdt_prices(self) -> dict[str, float]:
+        # `GET /api/v3/ticker/price` sin símbolo: TODOS los pares en una
+        # llamada (peso 4). Se quedan los `XXXUSDT` como precio de XXX.
+        precios = {}
+        for ticker in self.client.get_all_tickers():
+            symbol = str(ticker.get("symbol", ""))
+            if symbol.endswith(QUOTE_ASSET) and len(symbol) > len(QUOTE_ASSET):
+                precio = float(ticker.get("price") or 0)
+                if precio > 0:
+                    precios[symbol[: -len(QUOTE_ASSET)]] = precio
+        return precios
+
+    def get_deposits(self, start: datetime, end: datetime) -> list[dict]:
+        return _by_windows(start, end, _FUNDING_WINDOW, lambda a, b: self.client.get_deposit_history(
+            startTime=_ms(a), endTime=_ms(b)))
+
+    def get_withdrawals(self, start: datetime, end: datetime) -> list[dict]:
+        return _by_windows(start, end, _FUNDING_WINDOW, lambda a, b: self.client.get_withdraw_history(
+            startTime=_ms(a), endTime=_ms(b)))
+
+    def get_income(self, start: datetime, end: datetime) -> list[dict]:
+        def tramo(a: datetime, b: datetime) -> list[dict]:
+            # Hasta 1000 apuntes por respuesta, del más antiguo al más nuevo:
+            # si llega lleno, se pide el resto desde el último instante visto.
+            apuntes: list[dict] = []
+            desde = _ms(a)
+            while True:
+                pagina = list(self.client.futures_income_history(startTime=desde, endTime=_ms(b), limit=1000))
+                apuntes.extend(pagina)
+                if len(pagina) < 1000:
+                    return apuntes
+                desde = int(pagina[-1]["time"]) + 1
+
+        return _by_windows(start, end, _INCOME_WINDOW, tramo)
+
+
+def _ms(moment: datetime) -> int:
+    return int(moment.timestamp() * 1000)
+
+
+# Ventana máxima entre `startTime` y `endTime` que acepta cada endpoint.
+# Depósitos/retiros: 90 días. Income de futuros: se pide en tramos de 7 días
+# porque es el límite de varios endpoints de historial de `fapi` y así no
+# depende de cuál aplique a este; además Binance solo guarda ~3 meses.
+_FUNDING_WINDOW = timedelta(days=89)
+_INCOME_WINDOW = timedelta(days=7)
+
+
+def _by_windows(start: datetime, end: datetime, window: timedelta, fetch) -> list[dict]:
+    """Recorre `[start, end]` en tramos de `window` y concatena, del más
+    antiguo al más nuevo."""
+    filas: list[dict] = []
+    desde = start
+    while desde < end:
+        hasta = min(desde + window, end)
+        filas.extend(fetch(desde, hasta))
+        desde = hasta
+    return filas
 
 
 # Monedas de cotización: tenerlas no es una posición abierta, es el efectivo

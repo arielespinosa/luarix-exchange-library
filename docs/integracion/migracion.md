@@ -4,6 +4,28 @@ Cambios que rompen código existente, con el antes y el después.
 
 ---
 
+## Contrato por capacidades — Fase 3 (2026-10-16)
+
+Sin cambios para orchestator ni web-server (verificado con sus suites): no usan
+nada de lo que cambió.
+
+| Qué | Antes | Ahora |
+|---|---|---|
+| `get_order_book()` | `dict` crudo, forma distinta por exchange | `OrderBook` normalizado (`Decimal`, mejores niveles primero, crudo en `.raw`) |
+| `list_active()` | abstracto, solo spot | alias **deprecado** de `list_symbols("spot")` |
+| `list_symbols(market)` | — | nuevo, spot y futuros |
+| `supports_oco` / `supports_futures` | atributos fijados a mano | derivados de `capabilities()` / `markets` (mismos valores) |
+| Paper / MT5 `get_order_book` | `{}` | levanta `NotImplementedError` |
+| Libro de futuros de Bitunix | `NotImplementedError` | implementado |
+| `ExchangeFactory` | — | nueva; `BrokerFactory` delega en ella sin cambiar su firma |
+
+Si tienes un broker propio que hereda de `Broker`: renombra `list_active` a
+`list_symbols(self, market="spot")`, haz que `get_order_book` devuelva
+`OrderBook`, y sustituye `supports_oco`/`supports_futures` por `markets` y
+`unsupported` (fijarlos a mano sigue funcionando, pero ya no hace falta).
+
+---
+
 ## De `luarix-trading-framework` a `luarix-exchange-library` (2026-10-14)
 
 Todo lo que habla con un exchange salió de `luarix-trading-framework` a esta

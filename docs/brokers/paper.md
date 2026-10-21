@@ -144,7 +144,7 @@ Test de regresión con esos números:
 | `get_balance(market, asset)` | Una sola bolsa; `market` se ignora |
 | `get_positions(market, symbol)` | `list[BrokerPosition]` |
 | `get_ticker` | El último `close` visto |
-| `list_active` | Los símbolos cargados |
+| `list_symbols` | Los símbolos cargados |
 | `place_oco_order` / `cancel_oco` / `update_oco` | Completo |
 | `load_csv`, `get_historical_data`, `prepare_data` | Datos desde disco |
 | `mark_to_market_equity` | El capital de verdad |

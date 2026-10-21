@@ -307,6 +307,13 @@ class OrderInfo:
         "CANCELED": OrderStatus.CANCELED,
         "CANCELLED": OrderStatus.CANCELED,
         "EXPIRED": OrderStatus.CANCELED,
+        # Binance: cancelada por la protección contra auto-cruce; sigue
+        # cancelándose (no es un estado final todavía, pero no ha llenado más).
+        "EXPIRED_IN_MATCH": OrderStatus.CANCELED,
+        "PENDING_CANCEL": OrderStatus.NEW,
+        # Bitunix (canal de órdenes por WebSocket): llenada a medias y el resto
+        # cancelado. Lo ejecutado va en la cantidad llenada, no en el estado.
+        "PART_FILLED_CANCELED": OrderStatus.CANCELED,
         "REJECTED": OrderStatus.REJECTED,
     }
 

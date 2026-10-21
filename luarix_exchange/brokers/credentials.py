@@ -118,6 +118,24 @@ class BrokerCredentials:
             "test_api_key": ("BITUNIX_TEST_API_KEY",),
             "test_api_secret": ("BITUNIX_TEST_API_SECRET",),
         },
+        # Kraken y Bitfinex: sin testnet de spot. Para datos públicos no hacen
+        # falta claves; para comisiones bastan claves de SOLO LECTURA.
+        "KRAKEN": {"api_key": ("KRAKEN_API_KEY",), "api_secret": ("KRAKEN_API_SECRET",),
+                   "test_api_key": (), "test_api_secret": ()},
+        "BITFINEX": {"api_key": ("BITFINEX_API_KEY",), "api_secret": ("BITFINEX_API_SECRET",),
+                     "test_api_key": (), "test_api_secret": ()},
+        # Portados de arbitraje. `test_*`: testnet de Bybit / modo demo de OKX
+        # (solo para medir la ida y vuelta de una orden). OKX y KuCoin firman
+        # además con una passphrase.
+        "BYBIT": {"api_key": ("BYBIT_API_KEY",), "api_secret": ("BYBIT_API_SECRET",),
+                  "test_api_key": ("BYBIT_TESTNET_API_KEY",), "test_api_secret": ("BYBIT_TESTNET_API_SECRET",)},
+        "OKX": {"api_key": ("OKX_API_KEY",), "api_secret": ("OKX_API_SECRET",), "passphrase": ("OKX_API_PASSPHRASE",),
+                "test_api_key": ("OKX_DEMO_API_KEY",), "test_api_secret": ("OKX_DEMO_API_SECRET",)},
+        "KUCOIN": {"api_key": ("KUCOIN_API_KEY",), "api_secret": ("KUCOIN_API_SECRET",),
+                   "passphrase": ("KUCOIN_API_PASSPHRASE",), "test_api_key": (), "test_api_secret": ()},
+        "GATE": {"api_key": ("GATE_API_KEY",), "api_secret": ("GATE_API_SECRET",), "test_api_key": (), "test_api_secret": ()},
+        "HTX": {"api_key": ("HTX_API_KEY",), "api_secret": ("HTX_API_SECRET",), "test_api_key": (), "test_api_secret": ()},
+        "MEXC": {"api_key": ("MEXC_API_KEY",), "api_secret": ("MEXC_API_SECRET",), "test_api_key": (), "test_api_secret": ()},
     }
 
     @classmethod
@@ -160,3 +178,28 @@ class BrokerCredentials:
             return ""
 
         return cls(**{campo: primero(claves) for campo, claves in nombres.items()})
+
+
+def resolve_credentials(exchange: str, credentials: BrokerCredentials | None) -> BrokerCredentials:
+    """Las credenciales pasadas o, si no hay, las del entorno / `.env`.
+
+    `credentials` puede llegar como un objeto VACÍO (todos los campos en "")
+    desde un backend que aún no tiene claves para ese usuario.
+    `BrokerCredentials.__bool__` lo detecta, así que ese caso también cae al
+    entorno en vez de mandar cadenas vacías al exchange.
+
+    Raises:
+        ValueError: si no hay credenciales en ningún sitio, nombrando las
+            variables que hay que definir.
+    """
+    if credentials:
+        return credentials
+    clave = str(exchange).upper()
+    del_entorno = BrokerCredentials.from_env(clave)
+    if del_entorno:
+        return del_entorno
+    raise ValueError(
+        f"No hay credenciales para {clave}. Pásalas con "
+        f"`credentials=BrokerCredentials(api_key=..., api_secret=...)`, o define "
+        f"{clave}_API_KEY y {clave}_API_SECRET en el entorno o en el .env."
+    )

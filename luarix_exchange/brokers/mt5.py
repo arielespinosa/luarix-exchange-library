@@ -4,6 +4,7 @@ from typing import Callable
 import MetaTrader5 as mt5
 
 from luarix_exchange.brokers.base import Broker
+from luarix_exchange.capabilities import Capability
 from luarix_exchange.models.brokers import BrokerPosition
 from luarix_exchange.models.orders import Entry, Fill, OrderAck, OrderRequest, OrderStatus, OrderType
 from luarix_exchange.models.orders import Side
@@ -16,6 +17,9 @@ class MT5Broker(Broker):
       MT5 terminal instalado, con sesión iniciada y Algo Trading habilitado (Ctrl+E).
     """
 
+    name = "mt5"
+    label = "MetaTrader 5"
+
     # `place_oco_order` de esta clase SÍ funciona: pone el stop-loss y el
     # take-profit sobre la POSICIÓN y es el servidor de MT5 quien los
     # gestiona -- una sola llamada y exclusividad garantizada, que es
@@ -24,12 +28,15 @@ class MT5Broker(Broker):
     # Estaba sin declarar, o sea heredando `False` de `Broker`. Y como
     # `supports_independent_orders` también es False, un motor que
     # consultara los dos flags para elegir cómo proteger una posición se
-    # quedaba SIN NINGÚN camino válido contra este broker.
-    supports_oco = True
+    # quedaba SIN NINGÚN camino válido contra este broker. NativeOco SÍ (y
+    # de ahí `supports_oco = True`).
+    #
     # MT5 no separa spot de derivados: cada instrumento es lo que es, y todos
-    # los métodos ignoran `market`. `False` es la respuesta correcta a "¿tiene
-    # una cuenta de futuros aparte?".
-    supports_futures = False
+    # los métodos ignoran `market`. `markets` queda en solo spot (el default
+    # de `Exchange`), que da `supports_futures = False`: la respuesta correcta
+    # a "¿tiene una cuenta de futuros aparte?". Sin proveedor de velas ni
+    # libro, MARKET_DATA no se soporta.
+    unsupported = frozenset({Capability.MARKET_DATA, Capability.DERIVATIVES})
     # Requiere colocar el TP y el SL como órdenes propias, y este broker no
     # sabe hacerlo -- `update_order` ni siquiera modifica.
     supports_independent_orders = False
@@ -69,7 +76,7 @@ class MT5Broker(Broker):
 
     # ── Market data ────────────────────────────────────────────────────────
 
-    def list_active(self) -> list:
+    def list_symbols(self, market: str = "spot") -> list[str]:
         symbols = mt5.symbols_get()
         return [s.name for s in symbols] if symbols else []
 
@@ -81,8 +88,9 @@ class MT5Broker(Broker):
             return 0.0
         return float((tick.ask + tick.bid) / 2)
 
-    def get_order_book(self, symbol: str, limit: int = 20, market: str = "spot") -> dict:
-        return {}
+    def get_order_book(self, symbol: str, limit: int = 20, market: str = "spot"):
+        # Antes devolvía `{}`, que se lee como "libro vacío".
+        raise NotImplementedError("MT5Broker no implementa el libro de órdenes (market depth).")
 
     # ── Account ────────────────────────────────────────────────────────────
 

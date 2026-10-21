@@ -78,10 +78,12 @@ class PollingMarketDataFeed(LiveMarketDataFeed):
     """
     Generic fallback feed for any broker with no native real-time push —
     just a plain `MarketDataProvider` (REST). Polls `get_last_candles` on a
-    background thread; the most-recently-returned candle from a live klines
-    endpoint is typically still forming, so the second-to-last one is
-    treated as "the latest guaranteed-closed candle" and `on_new_candle`
-    fires the first time its `open_time` changes. This is what any broker
+    background thread and fires `on_new_candle` the first time the LATEST
+    CLOSED candle's `open_time` changes. (The providers already drop the
+    still-forming candle; until 2026-10-18 this took the second-to-last one
+    and every candle arrived one period late -- see `_poll_one`.) The
+    asyncio equivalent is `luarix_exchange.streaming.PollingCandleStream`.
+    This is what any broker
     without a dedicated entry in `get_live_feed_for` gets automatically —
     the seam a new broker needs zero extra code to plug into.
     """
@@ -132,9 +134,16 @@ class PollingMarketDataFeed(LiveMarketDataFeed):
     def _poll_one(self, symbol: str, timeframe: str, callback: OnNewCandle) -> None:
         raw = self._provider.get_last_candles(symbol, interval=timeframe, limit=3)
         candles = _dataframe_to_candles(symbol, timeframe, raw) if isinstance(raw, pd.DataFrame) else list(raw)
-        if len(candles) < 2:
+        # La ÚLTIMA vela cerrada. Antes se tomaba `candles[-2]` dando por
+        # hecho que la última seguía formándose -- pero los proveedores ya
+        # descartan la vela en curso (bugs.md, "limit=N devolvía N-1 velas"),
+        # así que `[-2]` era la ANTERIOR a la última cerrada: cada vela
+        # llegaba con un periodo entero de retraso a toda estrategia en vivo
+        # sobre polling (Bitunix). Verificado contra la API el 2026-10-18.
+        closed = [c for c in candles if c.is_closed]
+        if not closed:
             return
-        latest_closed = candles[-2]
+        latest_closed = closed[-1]
         key = (symbol, timeframe)
         if self._last_open_time.get(key) == latest_closed.open_time:
             return
@@ -190,3 +199,54 @@ def _kline_handler(symbol: str, timeframe: str, on_new_candle: OnNewCandle) -> C
             on_new_candle(candle)
 
     return handle
+
+
+class StreamingMarketDataFeed(LiveMarketDataFeed):
+    """`LiveMarketDataFeed` sobre la infraestructura de streaming (Fases 4-5):
+    WebSocket donde el broker lo tiene (Binance spot/futuros, Bitunix
+    futuros) y polling donde no, con la MISMA interfaz que los feeds de
+    arriba. Pensado para sustituir a `get_live_feed_for` en web-server y
+    orchestator con un cambio de una línea:
+
+        StreamingMarketDataFeed(broker, market="futures")
+
+    Solo entrega velas CERRADAS, una vez cada una. Los callbacks corren en el
+    hilo del `StreamRunner`: tienen que ser rápidos (ver
+    `luarix_exchange.streaming.bridge`).
+    """
+
+    def __init__(self, broker, market: str = "spot", poll_seconds: float = 20, runner=None):
+        from luarix_exchange.streaming import StreamRunner
+
+        self._broker = broker
+        self._market = market
+        self._poll_seconds = poll_seconds
+        self._own_runner = runner is None
+        self._runner = runner or StreamRunner(name=f"luarix-feed-{getattr(broker, 'name', 'broker')}")
+        self._handles: dict[tuple[str, str], object] = {}
+        self._lock = threading.Lock()
+
+    def subscribe(self, symbol: str, timeframe: str, on_new_candle: OnNewCandle) -> None:
+        from luarix_exchange.streaming import CandleSubscription, candle_stream
+
+        self.unsubscribe(symbol, timeframe)
+        stream = candle_stream(self._broker, poll_s=self._poll_seconds, market=self._market)
+        sub = CandleSubscription(symbol, timeframe, self._market)
+        handle = self._runner.start(lambda stop: stream.stream_candles([sub], on_new_candle, stop),
+                                    label=f"feed {symbol} {timeframe} {self._market}")
+        with self._lock:
+            self._handles[(symbol, timeframe)] = handle
+
+    def unsubscribe(self, symbol: str, timeframe: str) -> None:
+        with self._lock:
+            handle = self._handles.pop((symbol, timeframe), None)
+        if handle is not None:
+            handle.stop()
+
+    def stop(self) -> None:
+        with self._lock:
+            handles, self._handles = list(self._handles.values()), {}
+        for handle in handles:
+            handle.stop()
+        if self._own_runner:
+            self._runner.close()

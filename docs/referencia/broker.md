@@ -9,9 +9,16 @@ Referencia completa de firmas. Para el *cómo* y el *por qué*, ver la
 
 ## Atributos de clase
 
+`Broker` es, desde la Fase 3, la unión de las capacidades de trading
+(`MarketData`, `Account`, `Trading`, `Derivatives`, `NativeOco`). Ver
+[Capacidades](capacidades.md).
+
 ```python
-supports_futures: bool = False              # ¿tiene cuenta de derivados?
-supports_oco: bool = False                  # ¿OCO nativo del exchange?
+name, label                                 # "binance", "Binance"
+markets: frozenset[Market]                  # {SPOT} o {SPOT, FUTURES}
+unsupported: frozenset[Capability]          # lo heredado que NO soporta
+supports_futures                            # DERIVADO: Market.FUTURES in markets
+supports_oco                                # DERIVADO: NATIVE_OCO in capabilities()
 supports_independent_orders: bool = False   # ¿Entry+TP+SL como 3 órdenes propias?
 ```
 
@@ -47,18 +54,20 @@ def connect(self) -> None
 **Abstracto.** Establece o verifica la conexión. Binance hace `ping()`; Bitunix
 y Paper no hacen nada.
 
-### `list_active()`
+### `list_symbols()`
 
 ```python
-def list_active(self) -> list
+def list_symbols(self, market: str = "spot") -> list[str]
 ```
 
-**Abstracto.** Los símbolos operables.
+**Abstracto.** Los pares operables de ese mercado. `list_active()` sigue
+existiendo como alias **deprecado** de `list_symbols("spot")` (avisa con
+`DeprecationWarning`).
 
 | Broker | Fuente |
 |---|---|
-| Binance | `get_exchange_info()` |
-| Bitunix | `get_trading_pairs()` (spot) |
+| Binance | `exchangeInfo` de spot o de futuros, solo `status == "TRADING"` |
+| Bitunix | lista pública de pares de spot (`isOpen == 1`) o de futuros (`symbolStatus == "OPEN"`), en MAYÚSCULAS |
 | Paper | Los símbolos cargados con `load_csv` |
 | MT5 | `mt5.symbols_get()` |
 
@@ -120,12 +129,12 @@ def get_ticker(self, symbol: str, market: str = "spot") -> float
 ### `get_order_book()`
 
 ```python
-def get_order_book(self, symbol: str, limit: int = 20, market: str = "spot") -> dict
+def get_order_book(self, symbol: str, limit: int = 20, market: str = "spot") -> OrderBook
 ```
 
-**Abstracto.** El libro **crudo**, sin normalizar.
-
-Los futuros de Bitunix levantan `NotImplementedError`.
+**Abstracto.** El libro **normalizado** (desde la Fase 3): `Decimal`, bids y
+asks del mejor al peor, crudo en `.raw`. Paper y MT5 levantan
+`NotImplementedError` (no tienen libro).
 
 ---
 
@@ -315,8 +324,10 @@ from luarix_exchange.brokers.base import Broker
 from luarix_exchange.models.orders import OrderInfo
 
 class MiBroker(Broker):
-    supports_futures = True
-    supports_oco = False
+    name = "mibroker"
+    label = "Mi Broker"
+    markets = frozenset({Market.SPOT, Market.FUTURES})   # -> supports_futures
+    unsupported = frozenset({Capability.NATIVE_OCO})      # -> supports_oco = False
     supports_independent_orders = True
 
     def __init__(self, api_key, api_secret, **kw):
@@ -325,7 +336,7 @@ class MiBroker(Broker):
 
     # --- lo que NADIE puede heredar ---
     def connect(self): ...
-    def list_active(self): ...
+    def list_symbols(self, market="spot"): ...
     def get_ticker(self, symbol, market="spot"): ...
     def get_order_book(self, symbol, limit=20, market="spot"): ...
     def get_balance(self, market="spot", asset=None): ...
@@ -350,7 +361,11 @@ class MiBroker(Broker):
     2. **`quantity` positiva.** La dirección va en `side`.
     3. **Orden ascendente.** Las velas, de la más antigua a la más nueva.
 
-Después, añádelo a `AvailableBrokers` y a `BrokerFactory.get_broker` (con import
-**perezoso**, para que su SDK no sea obligatorio), y escribe un doble de su API
+Si no es un broker de trading completo (solo datos, solo spot...), no heredes
+de `Broker`: hereda de `Exchange` y de las capacidades que tenga. Ver
+[Añadir un exchange](../guia/nuevo-exchange.md).
+
+Después, regístralo en `_REGISTRY` de `luarix_exchange/factory.py` (por RUTA,
+para que su SDK no sea obligatorio), y escribe un doble de su API
 en `tests/test_broker_contract.py` con las respuestas **reales** de tu exchange,
 nombres de campo incluidos. Ahí es donde estaban todos los bugs.

@@ -16,7 +16,7 @@ pip install "luarix-exchange-library[bitunix]"
 | Flag | Valor |
 |---|---|
 | `supports_futures` | ✅ |
-| `supports_oco` | ❌ **no existe en su API** |
+| `supports_oco` | ❌ **no existe en su API** (`unsupported = {NATIVE_OCO}`) |
 | `supports_independent_orders` | ✅ |
 
 ## Construcción
@@ -304,7 +304,7 @@ usa siempre un intervalo de la tabla).
 | **Sin tipos de stop en futuros** | El stop va adjunto |
 | **Spot no lista todas las órdenes** | Su endpoint exige símbolo |
 | **Kline de spot sin rango** | El histórico sale del de futuros |
-| **Libro de futuros sin implementar** | Endpoint no verificado |
+| **Libro de futuros: `limit` solo 1, 5, 15 o 50** | Se pide el menor que cubre lo pedido y se recorta (verificado 2026-10-16) |
 | **API keys restringidas por IP** | `10004 Invalid IP` |
 | **`modify_order`, `pending_positions`, `change_leverage` sin verificar** | Documentados, no ejercitados contra la cuenta real |
 

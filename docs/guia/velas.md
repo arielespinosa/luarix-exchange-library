@@ -239,15 +239,22 @@ Motivos legítimos por los que una serie termina antes:
 
 ```python
 precio = broker.get_ticker("BTCUSDT", market="futures")     # float
-libro  = broker.get_order_book("BTCUSDT", limit=20, market="spot")   # dict crudo
+libro  = broker.get_order_book("BTCUSDT", limit=20, market="spot")   # OrderBook
+
+libro.best_bid        # (Decimal('81584.19'), Decimal('4.10421'))
+libro.best_ask        # (Decimal('81584.20'), Decimal('4.34822'))
+libro.spread, libro.mid
+libro.bids[:5]        # del mejor (más caro) al peor
+libro.raw             # la respuesta original del exchange, entera
 ```
 
-El libro se devuelve **sin normalizar**: cada exchange usa su forma y quien lee
-un libro suele querer los datos exactos.
+Desde la Fase 3 el libro sale **normalizado** (`OrderBook`, en `Decimal`), igual
+venga de Binance o de Bitunix, spot o futuros. Antes era el `dict` crudo de cada
+exchange, con formas distintas.
 
-!!! warning "El libro de futuros de Bitunix levanta"
-    `NotImplementedError` a propósito: su endpoint no está verificado contra la
-    API real y devolver el de spot sería mentir sobre qué mercado se mira.
+!!! info "Bitunix futuros solo acepta ciertos tamaños"
+    Su API admite `limit` 1, 5, 15 o 50. Se pide el menor que cubre lo pedido
+    (20 → 50) y se recorta a lo que pediste.
 
 ---
 
