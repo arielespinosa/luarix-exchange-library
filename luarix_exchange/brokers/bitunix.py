@@ -1,12 +1,11 @@
 import logging
 from decimal import Decimal
 
-from bitunix import BitunixClient
-
 from luarix_exchange.brokers.account_data.bitunix import BitunixAccountDataProvider
 from luarix_exchange.brokers.base import Broker
 from luarix_exchange.brokers.bitunix_streams import BitunixStreamsMixin
 from luarix_exchange.brokers.bitunix_response import BitunixApiError, unwrap
+from luarix_exchange.brokers.bitunix_spot_client import QuietBitunixClient
 from luarix_exchange.brokers.credentials import BrokerCredentials, resolve_credentials
 from luarix_exchange.brokers.market_data.bitunix import BitunixMarketDataProvider
 from luarix_exchange.capabilities import (
@@ -133,7 +132,7 @@ class BitunixBroker(Broker, SymbolRulesSource, AccountSummarySource, TickerStats
         self.api_secret = api_secret
         self.trading_mode = trading_mode
         self.allow_live_trading = allow_live_trading
-        self.client = BitunixClient(api_key, api_secret)
+        self.client = QuietBitunixClient(api_key, api_secret)
         self.market_data_provider = BitunixMarketDataProvider(api_key, api_secret)
         self.account_data_provider = BitunixAccountDataProvider(self.client)
 
@@ -256,16 +255,30 @@ class BitunixBroker(Broker, SymbolRulesSource, AccountSummarySource, TickerStats
     # Order execution
     # ─────────────────────────────────────────────
 
-    _SIDE_MAP = {Side.BUY: 1, Side.SELL: 2}
-    _TYPE_MAP = {OrderType.MARKET: 1, OrderType.LIMIT: 2}
+    # Códigos del spot de Bitunix: side 1 = SELL, 2 = BUY; type 1 = LIMIT,
+    # 2 = MARKET (docstring de `BitunixClient.place_order`, y confirmado con
+    # el historial real de la cuenta). Estuvieron invertidos los dos: cada
+    # compra a mercado del motor salía como una VENTA LIMIT al cierre de la
+    # vela, y cada venta como una compra -- 9 órdenes de LTCUSDT el
+    # 2026-10-23, ver `docs/plans/bugs.md` del web-server.
+    _SIDE_MAP = {Side.BUY: 2, Side.SELL: 1}
+    _TYPE_MAP = {OrderType.LIMIT: 1, OrderType.MARKET: 2}
 
     def place_order(self, order: OrderRequest) -> tuple[OrderAck, list[Fill]]:
         self._validate_pre_trade()
         if order.market == "futures":
             return self._place_futures_order(order)
 
-        side = self._SIDE_MAP.get(order.side, 2)
-        order_type = self._TYPE_MAP.get(order.order_type, 1)
+        side = self._SIDE_MAP[order.side]
+        # Sin default: un tipo que el spot no tiene (stop, trailing...) caía
+        # en silencio a una orden con el código 1 -- una LIMIT al precio de la
+        # orden, que no es lo que se pidió. Mejor que reviente y el nodo quede
+        # FAILED con el motivo en el tab Logs.
+        order_type = self._TYPE_MAP.get(order.order_type)
+        if order_type is None:
+            raise BitunixApiError(
+                f"El spot de Bitunix solo acepta órdenes MARKET y LIMIT, no {order.order_type.value}."
+            )
         volume = str(order.quantity)
         price = str(order.price) if order.price else "0"
 
