@@ -353,11 +353,17 @@ class BitunixFuturesClient:
             "qty": str(quantity),
             "side": side,                 # BUY / SELL
             "orderType": order_type,      # LIMIT / MARKET
+            # Siempre, también en MARKET: es el formato que usan a diario los
+            # bots del usuario contra esta misma API (`pionex/bitunix_api.py::
+            # place_future_order`). La primera MARKET real del motor, sin
+            # `effect` y con `price`, volvió con `10002 Parameter error`
+            # (2026-10-26); las LIMIT de julio, con `effect`, entraron bien.
+            "effect": "GTC",
         }
-        if price is not None:
+        # El precio solo en LIMIT: en MARKET no lo pide la API y el motor
+        # mandaba el cierre de la vela, que ahí no significa nada.
+        if order_type == "LIMIT" and price is not None:
             body["price"] = str(price)
-        if order_type == "LIMIT":
-            body["effect"] = "GTC"
         if tp_price is not None:
             body["tpPrice"] = str(tp_price)
             body["tpStopType"] = self.TRIGGER_TYPE

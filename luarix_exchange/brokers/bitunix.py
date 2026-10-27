@@ -1,5 +1,5 @@
 import logging
-from decimal import Decimal
+from decimal import ROUND_DOWN, ROUND_HALF_UP, Decimal
 
 from luarix_exchange.brokers.account_data.bitunix import BitunixAccountDataProvider
 from luarix_exchange.brokers.base import Broker
@@ -25,6 +25,14 @@ from luarix_exchange.models.orders import (
 from luarix_exchange.models.orders import Side
 
 logger = logging.getLogger(__name__)
+
+
+def _fit(value: float | None, step: Decimal | None, rounding=ROUND_HALF_UP) -> float | None:
+    """`value` al múltiplo de `step` (tick o step del par). La cantidad va
+    hacia abajo (nunca más de lo que se pidió); un precio, al más cercano."""
+    if value is None or not step:
+        return value
+    return float((Decimal(str(value)) / step).quantize(Decimal(1), rounding=rounding) * step)
 
 
 def ticker_from_bitunix(row: dict, rules: SymbolRules) -> Ticker24h:
@@ -351,24 +359,42 @@ class BitunixBroker(Broker, SymbolRulesSource, AccountSummarySource, TickerStats
         independiente que convive con él. El neteo automático solo ocurre en
         ONE_WAY. `BitunixFuturesClient.place_order` consulta el modo real de
         la cuenta y manda `tradeSide` solo cuando hace falta."""
+        # Cantidad y precios al step/tick del par: el motor calcula el TP/SL
+        # como `precio × 1.005` y salía `57.3654` (o `45.833800000000004`)
+        # para un par que cotiza en centésimas.
+        rules = self._futures_rules(order.symbol)
         data = self.account_data_provider.futures.place_order(
             symbol=order.symbol,
             side=order.side.value,
-            quantity=order.quantity,
-            price=order.price,
+            quantity=_fit(order.quantity, rules.step_size if rules else None, ROUND_DOWN),
+            price=_fit(order.price, rules.tick_size if rules else None),
             order_type=order.order_type.value,
             # TP/SL adjuntos a la propia entrada, y `reduce_only` para que una
             # salida se marque `tradeSide="CLOSE"` en modo HEDGE. Sin lo
             # segundo, el take-profit de un largo abría un corto real -- ver
             # `BitunixFuturesClient.place_order` y `docs/plans/bugs.md`.
-            tp_price=order.tp_price,
-            sl_price=order.sl_price,
+            tp_price=_fit(order.tp_price, rules.tick_size if rules else None),
+            sl_price=_fit(order.sl_price, rules.tick_size if rules else None),
             reduce_only=order.reduce_only,
         )
         order_id = str(data.get("orderId", "")) if isinstance(data, dict) else ""
         if not order_id:
             raise BitunixApiError(f"Bitunix aceptó la orden de futuros pero no devolvió `orderId`: {data!r}")
         return self._ack(order_id, order, data), []
+
+    def _futures_rules(self, symbol: str) -> SymbolRules | None:
+        """Step y tick del par en futuros, de la lista pública de pares, una
+        vez por instancia (no cambian en la vida de un despliegue). `None` si
+        la lista no responde: se coloca sin ajustar, como antes."""
+        cache = getattr(self, "_futures_rules_cache", None)
+        if cache is None:
+            try:
+                cache = self.get_symbol_rules("futures")
+            except Exception:  # noqa: BLE001 -- sin reglas se coloca igual
+                logger.warning("Bitunix: no se pudieron leer las reglas de futuros; la orden va sin ajustar.")
+                return None
+            self._futures_rules_cache = cache
+        return cache.get(symbol)
 
     def cancel_order(self, symbol: str, order_id: str, market: str = "spot") -> OrderAck:
         """Cancela UNA orden. `market="futures"` va por el cliente de

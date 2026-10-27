@@ -77,5 +77,52 @@ class QuietClientTests(unittest.TestCase):
         self.assertIn("sign", headers)
 
 
+
+class FuturesOrderBodyTests(unittest.TestCase):
+    """El cuerpo de una orden de futuros: el mismo formato que usan los bots
+    del usuario contra esta API (`effect` siempre, `price` solo en LIMIT),
+    con cantidad y precios ajustados al step/tick del par."""
+
+    def _client(self):
+        from luarix_exchange.brokers.bitunix_futures import BitunixFuturesClient
+
+        client = BitunixFuturesClient("k", "s")
+        client._position_mode = "HEDGE"
+        client.post = MagicMock(return_value={"orderId": "42"})
+        return client
+
+    def test_market_sends_effect_and_no_price(self):
+        client = self._client()
+        client.place_order(symbol="LTCUSDT", side="SELL", quantity=0.18, price=57.08, order_type="MARKET",
+                           tp_price=56.79, sl_price=57.37)
+        body = client.post.call_args.args[1]
+        self.assertEqual(body["effect"], "GTC")
+        self.assertNotIn("price", body)
+        self.assertEqual((body["tpPrice"], body["slPrice"], body["tradeSide"]), ("56.79", "57.37", "OPEN"))
+
+    def test_limit_keeps_its_price(self):
+        client = self._client()
+        client.place_order(symbol="LTCUSDT", side="BUY", quantity=0.18, price=56.5, order_type="LIMIT")
+        self.assertEqual(client.post.call_args.args[1]["price"], "56.5")
+
+    def test_broker_fits_quantity_and_prices_to_the_pair(self):
+        from decimal import Decimal
+
+        from luarix_exchange.models.rules import SymbolRules
+
+        broker = _broker()
+        broker._futures_rules_cache = {"LTCUSDT": SymbolRules(
+            symbol="LTCUSDT", base="LTC", quote="USDT", step_size=Decimal("0.001"),
+            tick_size=Decimal("0.01"), min_qty=Decimal("0.053"), min_notional=Decimal("0"),
+        )}
+        broker.account_data_provider.futures.place_order.return_value = {"orderId": "7"}
+        broker.place_order(OrderRequest(
+            symbol="LTCUSDT", side=Side.SELL, quantity=0.17519, order_type=OrderType.MARKET,
+            price=57.08, market="futures", tp_price=56.7946, sl_price=57.833800000000004,
+        ))
+        sent = broker.account_data_provider.futures.place_order.call_args.kwargs
+        self.assertEqual((sent["quantity"], sent["tp_price"], sent["sl_price"]), (0.175, 56.79, 57.83))
+
+
 if __name__ == "__main__":
     unittest.main()
