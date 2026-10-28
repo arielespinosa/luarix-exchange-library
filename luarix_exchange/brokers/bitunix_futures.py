@@ -33,6 +33,11 @@ PENDING_ORDERS = "/api/v1/futures/trade/get_pending_orders"
 # llenado O haber sido cancelada, y no hay forma de distinguirlas. Ver
 # `BitunixBroker.get_order_status` y `docs/plans/bugs.md`.
 ORDER_DETAIL = "/api/v1/futures/trade/get_order_detail"
+# El detalle de una orden YA llenada trae `avgPrice: null` (verificado con la
+# cuenta real el 2026-10-28, una LIMIT de LTCUSDT en FILLED): el precio real
+# solo está en sus ejecuciones, o en el histórico de órdenes.
+HISTORY_TRADES = "/api/v1/futures/trade/get_history_trades"
+HISTORY_ORDERS = "/api/v1/futures/trade/get_history_orders"
 CANCEL_ORDERS = "/api/v1/futures/trade/cancel_orders"
 PLACE_ORDER = "/api/v1/futures/trade/place_order"
 # Enmienda NATIVA de una orden pendiente: cambia precio/cantidad/TP/SL sin
@@ -157,6 +162,30 @@ class BitunixFuturesClient:
             action="la consulta del detalle de una orden de futuros", on_null={},
         )
         return data if isinstance(data, dict) else {}
+
+    def order_trades(self, symbol: str, order_id: str) -> list[dict]:
+        """Las ejecuciones de UNA orden (`price`, `qty`, `fee` en USDT,
+        `roleType` MAKER/TAKER). Una MARKET grande llena a varios precios:
+        su precio real es la media ponderada de éstas, no el de la orden."""
+        data = self.get(
+            HISTORY_TRADES, {"symbol": symbol, "orderId": str(order_id)},
+            action="la consulta de las ejecuciones de una orden de futuros", on_null={},
+        )
+        return list(data.get("tradeList") or []) if isinstance(data, dict) else []
+
+    def history_orders(self, symbol: str, start_time_ms: int | None = None, limit: int = 100) -> list[dict]:
+        """Órdenes ya terminadas (llenadas o canceladas) del par, la más
+        reciente primero. Incluye las que el EXCHANGE dispara solo -- el
+        TP/SL adjunto a una entrada sale de acá como una MARKET `reduceOnly`
+        con su `avgPrice` y `realizedPNL`, aunque nunca tuvo `orderId`
+        nuestro."""
+        params = {"symbol": symbol, "limit": str(limit)}
+        if start_time_ms is not None:
+            params["startTime"] = str(int(start_time_ms))
+        data = self.get(
+            HISTORY_ORDERS, params, action="la consulta del histórico de órdenes de futuros", on_null={},
+        )
+        return list(data.get("orderList") or []) if isinstance(data, dict) else []
 
     def cancel_orders(self, symbol: str, order_ids: list[str]) -> dict:
         return self.post(

@@ -192,6 +192,12 @@ class OrderAck:
         status:            Estado actual de la orden en Binance.
         oco_list_id:       El ID del OCO al que pertenece si fuese el caso
         raw:               Respuesta completa de la API de Binance (útil para depuración).
+        quantity / price / tp_price / sl_price:
+                           Lo que de verdad viajó al exchange, si el broker lo
+                           ajustó al step/tick del par (`None` = se envió tal
+                           cual se pidió). Bitunix futuros redondea el TP/SL
+                           a la centésima: quien guarde la orden tiene que
+                           guardar ESE nivel, no el `57.12294999…` calculado.
     """
     exchange_order_id: str | None = None
     client_order_id: str | None = None
@@ -200,6 +206,10 @@ class OrderAck:
     status: OrderStatus | None = None
     oco_list_id: str | None = None
     raw: dict[str, Any] = field(default_factory=dict)
+    quantity: float | None = None
+    price: float | None = None
+    tp_price: float | None = None
+    sl_price: float | None = None
 
 
 @dataclass(frozen=True)
@@ -272,6 +282,8 @@ class OrderInfo:
     filled_quantity: float = 0.0
     price: float | None = None
     average_price: float | None = None
+    #: Comisión total de lo ejecutado, en la moneda de cotización (USDT).
+    fee: float | None = None
     stop_price: float | None = None
     tp_price: float | None = None
     sl_price: float | None = None
@@ -396,10 +408,12 @@ class OrderInfo:
             filled_quantity=float(raw.get("tradeQty") or raw.get("dealVolume") or 0),
             price=cls._float_or_none(raw.get("price")),
             average_price=cls._float_or_none(raw.get("avgPrice") or raw.get("dealPrice")),
+            fee=cls._float_or_none(raw.get("fee")),
             tp_price=cls._float_or_none(raw.get("tpPrice")),
             sl_price=cls._float_or_none(raw.get("slPrice")),
             client_order_id=raw.get("clientId") or raw.get("clientOrderId"),
-            reduce_only=str(raw.get("tradeSide") or "").upper() == "CLOSE",
+            # El histórico de órdenes no trae `tradeSide`, solo `reduceOnly`.
+            reduce_only=str(raw.get("tradeSide") or "").upper() == "CLOSE" or raw.get("reduceOnly") is True,
             market=market,
             created_at=cls._time_of(raw.get("ctime") or raw.get("createTime")),
             raw=raw,

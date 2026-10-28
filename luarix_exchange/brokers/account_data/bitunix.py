@@ -122,16 +122,30 @@ class BitunixAccountDataProvider(AccountDataProvider):
         FILLED y podía dar por llenada una orden cancelada a mano.
         """
         if market == "futures":
-            return self.futures.order_detail(order_id)
+            detalle = self.futures.order_detail(order_id)
+            # Una orden llenada responde `avgPrice: null`: el precio real se
+            # saca de sus ejecuciones. Sin esto, quien preguntara por el
+            # precio de una MARKET solo tenía el que se pidió.
+            if detalle and not detalle.get("avgPrice") and float(detalle.get("tradeQty") or 0) > 0:
+                ejecuciones = self.futures.order_trades(symbol, order_id)
+                medio = _vwap(ejecuciones, "qty")
+                if medio is not None:
+                    detalle = {**detalle, "avgPrice": str(medio), "trades": ejecuciones}
+            return detalle
 
         crudo = unwrap(self.client.query_matching_orders(order_id=order_id, symbol=symbol),
                        "la consulta del detalle de la orden spot", on_null={})
         if crudo:
             # `query_matching_orders` puede devolver la lista de trades de la
             # orden en vez de la orden. Si trae ejecuciones, la orden llenó.
+            # Una MARKET llena a VARIOS precios (la compra de 0.26 LTC del
+            # 2026-10-28 01:25 tocó nueve niveles, de 57.32 a 57.43): su
+            # precio real es la media ponderada, y la comisión, la suma.
             if isinstance(crudo, list):
                 return {"orderId": str(order_id), "symbol": symbol, "status": "FILLED",
                         "dealVolume": sum(float(t.get("volume") or 0) for t in crudo),
+                        "avgPrice": _vwap(crudo, "volume"),
+                        "fee": _spot_fee_in_quote(crudo, symbol),
                         "trades": crudo}
             return dict(crudo)
 
@@ -225,6 +239,26 @@ class BitunixAccountDataProvider(AccountDataProvider):
             for item in data
             if item.get("quoteSymbol") == QUOTE_ASSET and float(item.get("rate") or 0) > 0
         }
+
+
+def _vwap(ejecuciones: list[dict], qty_key: str) -> float | None:
+    """Precio medio ponderado por cantidad; `None` sin ejecuciones."""
+    total = sum(float(e.get(qty_key) or 0) for e in ejecuciones)
+    if total <= 0:
+        return None
+    return sum(float(e.get("price") or 0) * float(e.get(qty_key) or 0) for e in ejecuciones) / total
+
+
+def _spot_fee_in_quote(ejecuciones: list[dict], symbol: str) -> float:
+    """Comisión total de una orden spot, en la moneda de cotización. Bitunix
+    cobra la compra en la moneda BASE (`feeCoin: "LTC"`) y la venta en la de
+    cotización: la base se pasa a cotización al precio de su ejecución."""
+    total = 0.0
+    for e in ejecuciones:
+        fee = float(e.get("fee") or 0)
+        coin = str(e.get("feeCoin") or "")
+        total += fee if coin and str(symbol).upper().endswith(coin.upper()) else fee * float(e.get("price") or 0)
+    return total
 
 
 # Monedas de cotización: tenerlas no es una posición abierta, es el efectivo

@@ -325,7 +325,7 @@ class BitunixBroker(Broker, SymbolRulesSource, AccountSummarySource, TickerStats
             )
 
     @staticmethod
-    def _ack(order_id: str, order: OrderRequest, raw: dict) -> OrderAck:
+    def _ack(order_id: str, order: OrderRequest, raw: dict, **sent) -> OrderAck:
         """`OrderAck` con los campos que la clase REALMENTE tiene.
 
         Todos los constructores de este broker pasaban `order_id=` y
@@ -343,6 +343,7 @@ class BitunixBroker(Broker, SymbolRulesSource, AccountSummarySource, TickerStats
             side=order.side,
             status=OrderStatus.NEW,
             raw=raw if isinstance(raw, dict) else {},
+            **sent,
         )
 
     def _place_futures_order(self, order: OrderRequest) -> tuple[OrderAck, list[Fill]]:
@@ -363,24 +364,31 @@ class BitunixBroker(Broker, SymbolRulesSource, AccountSummarySource, TickerStats
         # como `precio × 1.005` y salía `57.3654` (o `45.833800000000004`)
         # para un par que cotiza en centésimas.
         rules = self._futures_rules(order.symbol)
+        tick = rules.tick_size if rules else None
+        # Lo que de verdad sale al exchange: va también en el `OrderAck`,
+        # para que quien registre la orden guarde ESTOS niveles y la web no
+        # enseñe un TP de `57.1229` que en Bitunix es `57.12`.
+        sent = {
+            "quantity": _fit(order.quantity, rules.step_size if rules else None, ROUND_DOWN),
+            "price": _fit(order.price, tick),
+            "tp_price": _fit(order.tp_price, tick),
+            "sl_price": _fit(order.sl_price, tick),
+        }
         data = self.account_data_provider.futures.place_order(
             symbol=order.symbol,
             side=order.side.value,
-            quantity=_fit(order.quantity, rules.step_size if rules else None, ROUND_DOWN),
-            price=_fit(order.price, rules.tick_size if rules else None),
             order_type=order.order_type.value,
             # TP/SL adjuntos a la propia entrada, y `reduce_only` para que una
             # salida se marque `tradeSide="CLOSE"` en modo HEDGE. Sin lo
             # segundo, el take-profit de un largo abría un corto real -- ver
             # `BitunixFuturesClient.place_order` y `docs/plans/bugs.md`.
-            tp_price=_fit(order.tp_price, rules.tick_size if rules else None),
-            sl_price=_fit(order.sl_price, rules.tick_size if rules else None),
             reduce_only=order.reduce_only,
+            **sent,
         )
         order_id = str(data.get("orderId", "")) if isinstance(data, dict) else ""
         if not order_id:
             raise BitunixApiError(f"Bitunix aceptó la orden de futuros pero no devolvió `orderId`: {data!r}")
-        return self._ack(order_id, order, data), []
+        return self._ack(order_id, order, data, **sent), []
 
     def _futures_rules(self, symbol: str) -> SymbolRules | None:
         """Step y tick del par en futuros, de la lista pública de pares, una
@@ -487,6 +495,24 @@ class BitunixBroker(Broker, SymbolRulesSource, AccountSummarySource, TickerStats
             return OrderStatus.NEW
 
         return self.get_order(symbol, order_id, market).status
+
+    def get_closed_orders(self, symbol: str, market: str = "futures", since=None) -> list[OrderInfo]:
+        """Órdenes ya terminadas del par desde `since` (datetime), la más
+        reciente primero, con su `average_price` y `fee` REALES.
+
+        Es la única forma de saber a qué precio cerró una posición cuyo
+        TP/SL viajó adjunto a la entrada: esas salidas las dispara el
+        exchange y no tienen `orderId` nuestro, pero aparecen acá como una
+        MARKET `reduce_only`. El SL del corto de LTCUSDT del 2026-10-28
+        estaba en 57.70 y llenó a 57.72: inferirlo por las velas daba 57.70.
+
+        Solo futuros: el spot de Bitunix no tiene un histórico de órdenes
+        por par equivalente (ni TP/SL adjuntos que lo necesiten)."""
+        if market != "futures":
+            raise BitunixApiError("El histórico de órdenes cerradas de Bitunix solo existe en futuros.")
+        start_ms = int(since.timestamp() * 1000) if since is not None else None
+        crudas = self.account_data_provider.futures.history_orders(symbol, start_ms)
+        return [OrderInfo.from_bitunix(raw, market) for raw in crudas]
 
     def update_order(
         self,

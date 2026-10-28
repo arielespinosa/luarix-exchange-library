@@ -286,6 +286,9 @@ class _FakeBitunixFutures:
                 "side": "SELL", "orderType": "LIMIT", "qty": "2.2", "tradeQty": "1.1",
                 "price": "44.99", "tpPrice": "45.37"}
 
+    def order_trades(self, symbol, order_id):
+        return []
+
     def modify_order(self, order_id, **kw):
         self.llamadas.append(("modify_order", str(order_id), kw))
         return {"orderId": str(order_id)}
