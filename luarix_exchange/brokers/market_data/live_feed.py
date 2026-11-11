@@ -8,6 +8,7 @@ from datetime import datetime
 from typing import Callable
 
 import pandas as pd
+from binance import ThreadedWebsocketManager
 
 from luarix_exchange.brokers.market_data.binance import WebSocketBinanceMarketDataProvider
 from luarix_exchange.brokers.market_data.provider import MarketDataProvider
@@ -153,43 +154,56 @@ class PollingMarketDataFeed(LiveMarketDataFeed):
 
 class WebSocketMarketDataFeed(LiveMarketDataFeed):
     """
-    Real-time push via Binance's kline websocket
-    (`WebSocketBinanceMarketDataProvider` — already written, previously
-    unwired: see `app/brokers/market_data/binance.py`). One underlying
-    provider instance per (symbol, timeframe) subscribed, since that's how
-    `python-binance`'s `ThreadedWebsocketManager` socket is scoped.
+    Real-time push via Binance's kline websocket.
+
+    UN solo `ThreadedWebsocketManager` compartido para TODAS las suscripciones
+    (un `start_kline_socket` por (symbol, timeframe)), no uno por símbolo:
+    `python-binance` arranca un event loop propio por cada `ThreadedWebsocketManager`,
+    y crear un segundo manager mientras el primero corre lanza
+    `RuntimeError: This event loop is already running` ("Binance Socket Manager
+    failed to initialize"). Con un manager compartido, varias estrategias en
+    distintos símbolos/temporalidades conviven en el mismo feed.
     """
 
     def __init__(self, api_key: str, api_secret: str, testnet: bool = False):
         self._api_key = api_key
         self._api_secret = api_secret
         self._testnet = testnet
-        self._providers: dict[tuple[str, str], WebSocketBinanceMarketDataProvider] = {}
+        self._twm: ThreadedWebsocketManager | None = None
+        self._started = False
+        # (symbol, timeframe) -> nombre del socket (para `stop_socket`).
+        self._sockets: dict[tuple[str, str], str] = {}
+
+    def _ensure_started(self) -> ThreadedWebsocketManager:
+        if self._twm is None:
+            self._twm = ThreadedWebsocketManager(
+                api_key=self._api_key, api_secret=self._api_secret, testnet=self._testnet
+            )
+        if not self._started:
+            self._twm.start()
+            self._started = True
+        return self._twm
 
     def subscribe(self, symbol: str, timeframe: str, on_new_candle: OnNewCandle) -> None:
         key = (symbol, timeframe)
-        if key in self._providers:
+        if key in self._sockets:
             return
-        provider = WebSocketBinanceMarketDataProvider(
-            api_key=self._api_key,
-            api_secret=self._api_secret,
-            symbol=symbol,
-            interval=timeframe,
-            testnet=self._testnet,
-        )
-        provider.on_kline = _kline_handler(symbol, timeframe, on_new_candle)
-        self._providers[key] = provider
-        provider.start()
+        twm = self._ensure_started()
+        handler = _kline_handler(symbol, timeframe, on_new_candle)
+        socket_name = twm.start_kline_socket(callback=handler, symbol=symbol, interval=timeframe)
+        self._sockets[key] = socket_name
 
     def unsubscribe(self, symbol: str, timeframe: str) -> None:
-        provider = self._providers.pop((symbol, timeframe), None)
-        if provider:
-            provider.stop()
+        socket_name = self._sockets.pop((symbol, timeframe), None)
+        if socket_name and self._twm is not None:
+            self._twm.stop_socket(socket_name)
 
     def stop(self) -> None:
-        for provider in self._providers.values():
-            provider.stop()
-        self._providers.clear()
+        if self._twm is not None and self._started:
+            self._twm.stop()
+        self._twm = None
+        self._started = False
+        self._sockets.clear()
 
 
 def _kline_handler(symbol: str, timeframe: str, on_new_candle: OnNewCandle) -> Callable[[dict], None]:
