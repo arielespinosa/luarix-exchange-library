@@ -1159,3 +1159,17 @@ comisiones, activos). Sus tests (`test_new_exchanges.py` de arbitraje) están en
   de pruebas `BYBIT_TESTNET_*` y `OKX_DEMO_*`.
 - **Sin verificar** (necesitan claves): comisiones de los seis y órdenes de
   prueba de Bybit testnet / OKX demo.
+
+## PaperBroker: OCO enlazada a su entrada y caja en spot (2026-11-20)
+Origen: E2E de producción de Luarix (`luarix-web-server/docs/plans/prod_review_2026-11-20.md`, N1/N2).
+- **OCO ↔ entrada por índice**: `_open_position_entries` emparejaba la i-ésima entrada con la i-ésima OCO del
+  símbolo. Con SL/TP en solo una pata, una posición cerrada por SL seguía "abierta" (equity fantasma =
+  qty×precio del SL). Ahora `PaperOCO.entry_order_id` (lo fija `place_oco_order`: explícito o la última
+  entrada abierta sin OCO activa del lado contrario) y el fill de una pata marca `closed` en ESA entrada.
+  `pair_entries_with_ocos(state)` es la única implementación del emparejamiento (la usan también los motores);
+  las OCO sin enlace (estados sembrados) siguen con la heurística por orden.
+- **Spot sin control de caja**: `PaperBroker(market="spot")` (default; `options_from_config` lee `market`)
+  RECHAZA una compra que abre o amplía un largo si la caja no cubre nocional + comisión. Cerrar nunca se
+  bloquea. Futuros: sin control (no se modela margen).
+- **`Broker.get_position_mode(market)`** → `"single"`/`"hedge"` (Bitunix `positionMode`, Binance
+  `dualSidePosition`; spot y por defecto `"single"`), para que el simulador imite la cuenta real.

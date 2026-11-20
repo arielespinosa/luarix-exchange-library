@@ -124,6 +124,11 @@ class PaperOCO:
     sl_order: PaperOrder
     active: bool = True
     created_at: datetime = field(default_factory=datetime.utcnow)
+    #: `order_id` de la entrada que protege esta OCO. Lo fija `place_oco_order`
+    #: (explícito o enlazando la última entrada abierta sin protección del lado
+    #: contrario). `None` = OCO sin enlace (estado sembrado a mano o anterior a
+    #: este campo): `pair_entries_with_ocos` la empareja por orden, como antes.
+    entry_order_id: Optional[int] = None
 
     def cancel(self):
         self.active = False
@@ -444,6 +449,47 @@ class ExecutionReportFactory:
 # PAPER BROKER
 # ============================================================================
 
+def pair_entries_with_ocos(state: "EngineState") -> list[tuple["PaperOrder", "PaperOCO | None"]]:
+    """Cada entrada llenada con la OCO que la protege (o `None`), en orden de fill.
+
+    Única implementación del emparejamiento: la usan este simulador y los dos
+    motores (Django `operations_snapshot`, orquestador `trading_framework_broker_adapter`).
+
+    - Una OCO con `entry_order_id` va con ESA entrada (si hay varias, la más reciente).
+    - Las OCO sin enlace (estados sembrados a mano o anteriores al campo) se reparten
+      por orden de creación entre las entradas que quedaron sin OCO enlazada, por
+      símbolo -- la heurística histórica, que solo es fiable con una posición a la vez.
+
+    Las órdenes que CIERRAN una posición (`closes_order_id`, `position_mode="single"`)
+    no son entradas."""
+    entries = sorted(
+        (order for order in state.filled_orders
+         if not order.is_oco_leg and order.metadata.get("closes_order_id") is None),
+        key=lambda order: order.transact_time or order.working_time or datetime.min,
+    )
+    ocos = sorted(state.oco_orders, key=lambda oco: oco.created_at)
+    linked: dict[int, PaperOCO] = {}
+    unlinked_by_symbol: dict[str, list[PaperOCO]] = {}
+    for oco in ocos:
+        if oco.entry_order_id is not None:
+            linked[oco.entry_order_id] = oco
+        else:
+            unlinked_by_symbol.setdefault(oco.symbol, []).append(oco)
+
+    cursor: dict[str, int] = {}
+    pairs: list[tuple[PaperOrder, PaperOCO | None]] = []
+    for entry in entries:
+        matched = linked.get(entry.order_id)
+        if matched is None:
+            available = unlinked_by_symbol.get(entry.symbol, [])
+            index = cursor.get(entry.symbol, 0)
+            if index < len(available):
+                matched = available[index]
+                cursor[entry.symbol] = index + 1
+        pairs.append((entry, matched))
+    return pairs
+
+
 class PaperBroker(Broker):
     """Simulador de broker que imita la interfaz de BinanceBroker para backtesting.
 
@@ -474,6 +520,10 @@ class PaperBroker(Broker):
     #: `next_open`: una MARKET se llena a la apertura de la vela siguiente,
     #: como el emulador de TradingView.
     FILL_MODELS = ("signal_close", "next_open")
+    #: `spot`: al contado -- una compra que abre o amplía un largo se rechaza si
+    #: la caja no cubre nocional + comisión. `futures`: sin control de margen
+    #: (no se modela apalancamiento), comportamiento histórico.
+    MARKETS = ("spot", "futures")
 
     def __init__(
         self,
@@ -484,13 +534,17 @@ class PaperBroker(Broker):
         speed: float = 0.2,
         position_mode: str = "hedge",
         fill_model: str = "signal_close",
+        market: str = "spot",
     ):
+        if market not in self.MARKETS:
+            raise ValueError(f"market desconocido: {market!r} (válidos: {self.MARKETS})")
         if position_mode not in self.POSITION_MODES:
             raise ValueError(f"position_mode desconocido: {position_mode!r} (válidos: {self.POSITION_MODES})")
         if fill_model not in self.FILL_MODELS:
             raise ValueError(f"fill_model desconocido: {fill_model!r} (válidos: {self.FILL_MODELS})")
         self.position_mode = position_mode
         self.fill_model = fill_model
+        self.market = market
         self.state = EngineState()
         #: símbolo (mayúsculas) -> (salida, `order_id` de la entrada que cubre o `None` = la que se abra)
         self._position_exits: dict[str, tuple[PositionExit, int | None]] = {}
@@ -513,7 +567,7 @@ class PaperBroker(Broker):
         default histórico; un valor explícito inválido levanta `ValueError`
         en vez de correr el backtest con otra cosa en silencio."""
         config = config or {}
-        options = {"commission": 0.001, "position_mode": "hedge", "fill_model": "signal_close"}
+        options = {"commission": 0.001, "position_mode": "hedge", "fill_model": "signal_close", "market": "spot"}
 
         raw_commission = config.get("commission_pct")
         if raw_commission not in (None, ""):
@@ -525,7 +579,9 @@ class PaperBroker(Broker):
                 raise ValueError(f"commission_pct no puede ser negativa: {commission_pct}")
             options["commission"] = commission_pct / 100
 
-        for key, valid in (("position_mode", cls.POSITION_MODES), ("fill_model", cls.FILL_MODELS)):
+        for key, valid in (
+            ("position_mode", cls.POSITION_MODES), ("fill_model", cls.FILL_MODELS), ("market", cls.MARKETS),
+        ):
             value = config.get(key)
             if value in (None, ""):
                 continue
@@ -619,30 +675,20 @@ class PaperBroker(Broker):
         mismo comportamiento ya documentado en `workflow.backtesting.position_tracking`
         del lado del orchestrator.
         """
-        # Las órdenes que CIERRAN una posición (`position_mode="single"`) no
-        # son entradas. Una entrada ya cerrada sí sigue en la lista hasta
-        # después del emparejamiento: si se quitara antes, la entrada siguiente
-        # se emparejaría con el OCO (cancelado) de la cerrada.
-        entries = sorted(
-            (order for order in self.state.filled_orders
-             if not order.is_oco_leg and order.metadata.get("closes_order_id") is None),
-            key=lambda order: order.transact_time or order.working_time or datetime.min,
-        )
-        ocos_by_symbol: dict[str, list[PaperOCO]] = {}
-        for oco in sorted(self.state.oco_orders, key=lambda oco: oco.created_at):
-            ocos_by_symbol.setdefault(oco.symbol, []).append(oco)
-
-        cursor: dict[str, int] = {}
+        # Enlace explícito (`PaperOCO.entry_order_id`): la entrada sigue abierta
+        # mientras no se haya cerrado (`closed`, lo marca el fill de una pata de
+        # SU OCO o una reversa en `single`) -- cancelar su OCO no la cierra. Sin
+        # enlace, la heurística de siempre: abierta mientras su OCO siga activa.
         open_entries: list[PaperOrder] = []
-        for entry in entries:
-            available = ocos_by_symbol.get(entry.symbol, [])
-            index = cursor.get(entry.symbol, 0)
-            matched = available[index] if index < len(available) else None
-            if matched is not None:
-                cursor[entry.symbol] = index + 1
-            if (matched is None or matched.active) and not entry.metadata.get("closed"):
+        for entry, oco in pair_entries_with_ocos(self.state):
+            if entry.metadata.get("closed"):
+                continue
+            if oco is None or oco.entry_order_id is not None or oco.active:
                 open_entries.append(entry)
         return open_entries
+
+    def get_position_mode(self, market: str = "futures") -> str:
+        return self.position_mode
 
     def get_positions(self, market: str = "spot", symbol: str | None = None) -> list[BrokerPosition]:
         """Las posiciones abiertas del simulador, con la MISMA forma que las
@@ -879,7 +925,15 @@ class PaperBroker(Broker):
         take_profit_price: float,
         stop_price: float,
         stop_limit_price: float,
+        entry_order_id: int | None = None,
     ) -> tuple[str, OrderAck, OrderAck]:
+        """`entry_order_id`: la entrada que protege. Sin él, la última entrada
+        abierta de `symbol` del lado contrario a `side` que no tenga ya una OCO
+        activa -- el patrón de los dos motores (la OCO se coloca al llenar la
+        entrada). Antes no había enlace y se emparejaba por posición en la
+        lista, lo que con SL/TP en solo una pata dejaba posiciones fantasma."""
+        if entry_order_id is None:
+            entry_order_id = self._unprotected_entry_for(symbol, OrderSide(side.value))
         list_id = self.state.generate_oco_id()
         paper_side = OrderSide(side.value)
         qty = Decimal(str(quantity))
@@ -909,7 +963,7 @@ class PaperBroker(Broker):
             working_time=now,
         )
 
-        oco = PaperOCO(list_id=list_id, symbol=symbol, tp_order=tp, sl_order=sl)
+        oco = PaperOCO(list_id=list_id, symbol=symbol, tp_order=tp, sl_order=sl, entry_order_id=entry_order_id)
         self.state.oco_orders.append(oco)
         self.state.pending_orders.append(tp)
         self.state.pending_orders.append(sl)
@@ -957,7 +1011,10 @@ class PaperBroker(Broker):
         new_sl: float,
         new_sl_limit: float,
     ) -> tuple[str, OrderAck, OrderAck]:
+        linked_entry_id = None
         if entry.oco_list_id is not None:
+            previous = next((o for o in self.state.oco_orders if o.list_id == int(entry.oco_list_id)), None)
+            linked_entry_id = previous.entry_order_id if previous is not None else None
             self.cancel_oco(entry.symbol, int(entry.oco_list_id))
         closing_side = Side.SELL if entry.side == Side.BUY else Side.BUY
         return self.place_oco_order(
@@ -967,6 +1024,7 @@ class PaperBroker(Broker):
             take_profit_price=new_tp,
             stop_price=new_sl,
             stop_limit_price=new_sl_limit,
+            entry_order_id=linked_entry_id,
         )
 
     # ── Backtesting ───────────────────────────────────────────────────────────
@@ -1044,6 +1102,23 @@ class PaperBroker(Broker):
     def _open_entry_for(self, symbol: str) -> PaperOrder | None:
         entries = [e for e in self._open_position_entries() if e.symbol.upper() == symbol.upper()]
         return entries[-1] if entries else None
+
+    def _unprotected_entry_for(self, symbol: str, oco_side: OrderSide) -> int | None:
+        """La última entrada abierta de `symbol` del lado contrario a `oco_side`
+        sin una OCO activa -- la que una OCO recién colocada viene a proteger."""
+        protected = {oco.entry_order_id for oco in self.state.oco_orders if oco.active and oco.entry_order_id is not None}
+        candidates = [
+            entry for entry in self._open_position_entries()
+            if entry.symbol.upper() == symbol.upper() and entry.side != oco_side and entry.order_id not in protected
+        ]
+        return candidates[-1].order_id if candidates else None
+
+    def _close_entry_of_oco_leg(self, leg: PaperOrder) -> None:
+        """Una pata de OCO llenó: la posición que protegía queda cerrada."""
+        for entry, oco in pair_entries_with_ocos(self.state):
+            if oco is not None and oco.list_id == leg.order_list_id:
+                entry.metadata["closed"] = True
+                return
 
     def _apply_position_exit(self, candle) -> None:
         requested = self._position_exits.get(str(candle.symbol).upper())
@@ -1248,6 +1323,10 @@ class PaperBroker(Broker):
             if order.metadata.get("closes_order_id") is not None:
                 return  # `reduce_only`: la propia orden fue el cierre
 
+        if not self._spot_cash_covers(order, fill_price):
+            self._reject(order)
+            return
+
         self._execute(order, fill_price, candle)
 
     def _resolve_single_position(self, order: PaperOrder, fill_price: Decimal, candle) -> bool:
@@ -1304,6 +1383,18 @@ class PaperBroker(Broker):
                 self.state.canceled_orders.append(order)
                 self._emit(ExecutionReportFactory.expire(order))
 
+    def _spot_cash_covers(self, order: PaperOrder, fill_price: Decimal) -> bool:
+        """Al contado, una COMPRA que abre o amplía un largo necesita caja para
+        nocional + comisión. Las patas de OCO y las órdenes que cierran una
+        posición no se comprueban (cerrar nunca se bloquea). Futuros: sin
+        control (no se modela margen)."""
+        if self.market != "spot" or order.side != OrderSide.BUY or order.is_oco_leg:
+            return True
+        if order.metadata.get("closes_order_id") is not None:
+            return True
+        cost = float(order.quantity * fill_price) * (1 + float(self._commission))
+        return cost <= self._balance + 1e-9
+
     def _reject(self, order: PaperOrder) -> None:
         order.status = OrderStatus.REJECTED
         if order in self.state.pending_orders:
@@ -1341,6 +1432,7 @@ class PaperBroker(Broker):
         self._emit(ExecutionReportFactory.fill(order))
 
         if order.is_oco_leg:
+            self._close_entry_of_oco_leg(order)
             self._cancel_other_leg(order)
 
         tag = "ENTRY" if not order.is_oco_leg else ("TP" if order.type == OrderType.LIMIT else "SL")

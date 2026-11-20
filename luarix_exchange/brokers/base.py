@@ -405,6 +405,17 @@ class Broker(Exchange, MarketData, Account, Trading, Derivatives, NativeOco):
     def update_oco(self, entry: Entry, new_tp: float, new_sl: float, new_sl_limit:float) -> tuple[str, OrderAck, OrderAck]:
         pass
 
+    def get_position_mode(self, market: str = "futures") -> str:
+        """El modo de posición de la CUENTA en el exchange: `"single"` (one-way:
+        una posición neta por símbolo, una orden contraria la reduce o la
+        invierte) o `"hedge"` (largo y corto conviven). Mismo vocabulario que
+        `PaperBroker.POSITION_MODES`, para que el simulador imite la cuenta.
+
+        Spot es siempre `"single"`. Por defecto `"single"` (el modo por defecto
+        de los exchanges); cada broker con futuros lo sobrescribe preguntando
+        a la cuenta (necesita credenciales)."""
+        return "single"
+
     @abstractmethod
     def get_positions(self, market: str = "spot", symbol: str | None = None) -> list[BrokerPosition]:
         """Las posiciones ABIERTAS ahora mismo.

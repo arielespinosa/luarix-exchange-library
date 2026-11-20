@@ -66,18 +66,18 @@ class OptionsFromNodeConfigTests(unittest.TestCase):
 
     def test_empty_config_gives_the_historical_defaults(self):
         self.assertEqual(PaperBroker.options_from_config({}),
-                         {"commission": 0.001, "position_mode": "hedge", "fill_model": "signal_close"})
+                         {"commission": 0.001, "position_mode": "hedge", "fill_model": "signal_close", "market": "spot"})
         self.assertEqual(PaperBroker.options_from_config(None)["commission"], 0.001)
 
     def test_reads_the_three_options_with_commission_in_percent(self):
         options = PaperBroker.options_from_config(
             {"commission_pct": 0, "position_mode": "single", "fill_model": "next_open", "market": "spot"})
-        self.assertEqual(options, {"commission": 0.0, "position_mode": "single", "fill_model": "next_open"})
+        self.assertEqual(options, {"commission": 0.0, "position_mode": "single", "fill_model": "next_open", "market": "spot"})
         self.assertAlmostEqual(PaperBroker.options_from_config({"commission_pct": "0.075"})["commission"], 0.00075)
 
     def test_blank_values_fall_back_to_defaults(self):
         options = PaperBroker.options_from_config({"commission_pct": "", "position_mode": "", "fill_model": None})
-        self.assertEqual(options, {"commission": 0.001, "position_mode": "hedge", "fill_model": "signal_close"})
+        self.assertEqual(options, {"commission": 0.001, "position_mode": "hedge", "fill_model": "signal_close", "market": "spot"})
 
     def test_invalid_values_fail_loudly(self):
         for config in ({"commission_pct": "abc"}, {"commission_pct": -1}, {"position_mode": "x"}, {"fill_model": "x"}):

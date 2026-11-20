@@ -242,6 +242,13 @@ class BitunixBroker(Broker, SymbolRulesSource, AccountSummarySource, TickerStats
     def get_balance(self, market: str = "spot", asset: str | None = None) -> dict[str, float]:
         return self.account_data_provider.get_balance(market, asset)
 
+    def get_position_mode(self, market: str = "futures") -> str:
+        """`positionMode` de la cuenta de futuros (`HEDGE`/`ONE_WAY`), ver
+        `BitunixFuturesClient.position_mode`. Spot: `"single"` sin preguntar."""
+        if market != "futures":
+            return "single"
+        return "hedge" if self.account_data_provider.futures.position_mode() == "HEDGE" else "single"
+
     def get_positions(self, market: str = "spot", symbol: str | None = None) -> list[BrokerPosition]:
         """Posiciones abiertas.
 

@@ -429,6 +429,14 @@ class BinanceBroker(
         crudos = self.account_data_provider.get_income(start, end)
         return sorted((IncomeEntry.from_binance(r) for r in crudos), key=lambda e: e.timestamp)
 
+    def get_position_mode(self, market: str = "futures") -> str:
+        """`GET /fapi/v1/positionSide/dual` (`dualSidePosition`): `True` = modo
+        cobertura. Spot: `"single"` sin preguntar."""
+        if market != "futures":
+            return "single"
+        dual = self._client().futures_get_position_mode().get("dualSidePosition")
+        return "hedge" if str(dual).lower() == "true" else "single"
+
     def get_positions(self, market: str = "spot", symbol: str | None = None) -> list[BrokerPosition]:
         """Posiciones abiertas.
 
