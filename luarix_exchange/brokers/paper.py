@@ -838,6 +838,10 @@ class PaperBroker(Broker):
             metadata["reduce_only"] = True
         if (order.metadata or {}).get("close_opposite"):
             metadata["close_opposite"] = True
+        closes_entry = (order.metadata or {}).get("closes_entry_order_id")
+        if closes_entry not in (None, ""):
+            # La entrada que esta salida `reduce_only` cierra (ver `_resolve_hedge_reduce`).
+            metadata["closes_entry_order_id"] = int(closes_entry)
         valid_candles = (order.metadata or {}).get("valid_candles")
         if valid_candles:
             metadata["candles_left"] = int(valid_candles)
@@ -1322,6 +1326,9 @@ class PaperBroker(Broker):
                 return
             if order.metadata.get("closes_order_id") is not None:
                 return  # `reduce_only`: la propia orden fue el cierre
+        elif not order.is_oco_leg and order.metadata.get("reduce_only"):
+            if not self._resolve_hedge_reduce(order):
+                return
 
         if not self._spot_cash_covers(order, fill_price):
             self._reject(order)
@@ -1366,6 +1373,33 @@ class PaperBroker(Broker):
         closing.metadata["closes_client_order_id"] = position.client_order_id
         position.metadata["closed"] = True
         self._execute(closing, fill_price, candle)
+        return True
+
+    def _resolve_hedge_reduce(self, order: PaperOrder) -> bool:
+        """`position_mode="hedge"`: una orden `reduce_only` CIERRA una posición
+        contraria del mismo par -- la de `closes_entry_order_id` si la petición
+        la nombra, si no la más reciente -- y nunca abre una nueva. Sin nada
+        que cerrar se rechaza, como en `single`. Antes `reduce_only` se
+        ignoraba en `hedge`: el SL/TP independiente de un largo abría un corto
+        fantasma y el largo seguía abierto. Devuelve `False` si se rechazó."""
+        candidates = [
+            entry for entry in self._open_position_entries()
+            if entry.symbol.upper() == order.symbol.upper() and entry.side != order.side
+        ]
+        wanted = order.metadata.get("closes_entry_order_id")
+        target = next((entry for entry in candidates if entry.order_id == wanted), None) if wanted else None
+        if target is None and candidates:
+            target = candidates[-1]
+        if target is None:
+            self._reject(order)
+            return False
+        for entry, oco in pair_entries_with_ocos(self.state):
+            if entry is target and oco is not None and oco.active:
+                self.cancel_oco(oco.symbol, oco.list_id)
+        order.quantity = target.quantity
+        order.metadata["closes_order_id"] = target.order_id
+        order.metadata["closes_client_order_id"] = target.client_order_id
+        target.metadata["closed"] = True
         return True
 
     def _expire_orders_out_of_candles(self, candle) -> None:

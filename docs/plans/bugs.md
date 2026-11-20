@@ -1173,3 +1173,4 @@ Origen: E2E de producción de Luarix (`luarix-web-server/docs/plans/prod_review_
   bloquea. Futuros: sin control (no se modela margen).
 - **`Broker.get_position_mode(market)`** → `"single"`/`"hedge"` (Bitunix `positionMode`, Binance
   `dualSidePosition`; spot y por defecto `"single"`), para que el simulador imite la cuenta real.
+- **`reduce_only` en `hedge`** (2026-11-20, revisión de OCO): se ignoraba y el SL/TP independiente de un largo abría un corto fantasma. Ahora cierra la posición contraria del par (la de `OrderRequest.metadata["closes_entry_order_id"]` si viene, si no la más reciente), cancela su OCO y marca `closes` en el report; sin nada que cerrar, se rechaza (como en `single`). Las órdenes sin `reduce_only` no cambian.
